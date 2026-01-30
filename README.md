@@ -179,3 +179,5 @@ Admin users must have `role: 'admin'` in the MongoDB database. You can either:
 ## License
 
 ISC
+
+# Afrikad
