@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+*.pem
+
+# Build and logs
+dist/
+build/
+*.log
+npm-debug.log*
+
+# OS and IDE
+.DS_Store
+.idea/
+*.swp
+*.swo
+
+# Backend
+backend/.env
+backend/cloudflare-tunnel.yml
+backend/.cloudflare/
+
+# Metro / Expo
+.metro-health-check-*
+*.jks
+*.p8

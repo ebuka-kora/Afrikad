@@ -1,0 +1,19 @@
+diff --git a/build/ExpoFontLoader.web.js b/build/ExpoFontLoader.web.js
+--- a/build/ExpoFontLoader.web.js
++++ b/build/ExpoFontLoader.web.js
+@@ -134,9 +134,13 @@
+         if (!isFontLoadingListenerSupported()) {
+             return Promise.resolve();
+         }
+-        return new FontObserver(fontFamilyName, {
++        const timeoutMs = 15000;
++        return new FontObserver(fontFamilyName, {
+             // @ts-expect-error: TODO(@kitten): Typings indicate that the polyfill may not support this?
+             display: resource.display,
+-        }).load(null, 6000);
++        }).load(null, timeoutMs).catch(() => {
++            // Font failed to load in time (e.g. slow network). Resolve anyway so app doesn't crash.
++            // Icons may fall back to system font; user can still use the app.
++        });
+     },
+ };
