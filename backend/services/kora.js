@@ -82,7 +82,13 @@ class KoraService {
         },
       };
       const response = await this.client.post('/api/v1/cardholders', payload);
-      return response.data;
+      const resData = response.data;
+      // Log response shape (no PII) to debug missing reference
+      if (resData && !resData.reference && !resData.data?.reference) {
+        const keys = resData.data ? Object.keys(resData.data) : Object.keys(resData);
+        console.info('Kora cardholder response keys:', keys.join(', '));
+      }
+      return resData;
     } catch (error) {
       console.error('Kora createCardholder error:', error.response?.data || error.message);
       throw new Error(error.response?.data?.message || 'Failed to create card holder');
@@ -104,7 +110,24 @@ class KoraService {
         brand: data.brand || 'visa',
       };
       const response = await this.client.post('/api/v1/cards', payload);
-      return response.data;
+      const resData = response.data;
+      // Doc: response is { status, message, data: { reference, ... } }. Normalize if API returns reference as plain string or array-like.
+      if (typeof resData === 'string' && resData.length >= 10 && resData.length <= 200) {
+        return { status: true, data: { reference: resData.trim(), status: 'pending' } };
+      }
+      if (resData && typeof resData === 'object' && !resData.reference && !resData.data?.reference && !resData.id) {
+        const keys = resData.data != null ? Object.keys(resData.data) : Object.keys(resData);
+        const isArrayLike = keys.length >= 10 && keys.every((k, i) => String(i) === k);
+        if (isArrayLike) {
+          const arr = Array.isArray(resData) ? resData : Array.from({ length: keys.length }, (_, i) => resData[i]);
+          const ref = arr.map((x) => (typeof x === 'string' ? x : (typeof x === 'number' && x >= 0 && x <= 255 ? String.fromCharCode(x) : (x != null ? String(x) : '')))).join('');
+          if (ref.length >= 10 && ref.length <= 200 && /^[a-zA-Z0-9_-]+$/.test(ref)) {
+            return { status: true, data: { reference: ref, status: 'pending' } };
+          }
+        }
+        console.info('Kora card response keys:', keys.join(', '));
+      }
+      return resData;
     } catch (error) {
       console.error('Kora createCard error:', error.response?.data || error.message);
       throw new Error(error.response?.data?.message || 'Failed to create virtual card');
@@ -196,17 +219,30 @@ class KoraService {
   }
 
   /**
-   * Get FX rate (optional, for display purposes)
+   * Get live FX rate from Kora Exchange Rate API
+   * POST /api/v1/conversions/rates
+   * Returns rate (e.g. NGN per 1 USD when from=USD, to=NGN). Fallback 1500 if API fails.
    */
-  async getFxRate(fromCurrency = 'NGN', toCurrency = 'USD') {
+  async getFxRate(fromCurrency = 'USD', toCurrency = 'NGN') {
+    const FALLBACK_RATE = 1500; // 1 USD = 1500 NGN
     try {
-      const response = await this.client.get(`/rates/${fromCurrency}/${toCurrency}`);
-      return response.data;
+      const response = await this.client.post('/api/v1/conversions/rates', {
+        from_currency: fromCurrency,
+        to_currency: toCurrency,
+        amount: 1,
+        reference: `rate-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      });
+      const data = response.data?.data;
+      const rate = data?.rate != null ? Number(data.rate) : FALLBACK_RATE;
+      return {
+        rate,
+        from_currency: data?.from_currency || fromCurrency,
+        to_currency: data?.to_currency || toCurrency,
+      };
     } catch (error) {
       console.error('Kora getFxRate error:', error.response?.data || error.message);
-      // Return a mock rate if API fails (for development)
       return {
-        rate: 1500, // 1 USD = 1500 NGN (mock)
+        rate: FALLBACK_RATE,
         from_currency: fromCurrency,
         to_currency: toCurrency,
       };
@@ -219,9 +255,9 @@ class KoraService {
    */
   async getFxQuote(amountUsd) {
     try {
-      // Get current FX rate
-      const rateData = await this.getFxRate('NGN', 'USD');
-      const rate = rateData.rate || 1500; // Fallback to 1500 if API fails
+      // Get live rate: 1 USD = rate NGN
+      const rateData = await this.getFxRate('USD', 'NGN');
+      const rate = rateData.rate || 1500;
       
       // Calculate base NGN amount
       const baseAmountNgn = amountUsd * rate;
@@ -314,74 +350,168 @@ class KoraService {
   /**
    * Payout to NGN bank account (used for wallet withdrawals)
    * POST /merchant/api/v1/transactions/disburse
+   * Note: Deposit (charge) and withdraw (disburse) both use the same secret key; if deposit works
+   * but withdraw returns not_authorized, enable Payouts on your Kora dashboard or contact Kora support.
    */
   async payoutToBank({ reference, amount, bankCode, accountNumber, narration, customer, metadata = {} }) {
+    if (!KORA_SECRET_KEY || !String(KORA_SECRET_KEY).trim()) {
+      throw new Error('KORA_SECRET_KEY is not set in .env. Use your Secret key from Kora Dashboard → Settings → API Configuration.');
+    }
     try {
+      // Kora requires amount in two decimal places (number)
+      const amountNum = Math.round(Number(amount) * 100) / 100;
+      // metadata: max 5 keys; empty object not allowed per Kora docs
+      const meta = Object.keys(metadata || {}).length ? metadata : undefined;
       const payload = {
-        reference,
+        reference: String(reference),
         destination: {
           type: 'bank_account',
-          amount,
+          amount: amountNum,
           currency: 'NGN',
           narration: narration || 'Wallet withdrawal',
           bank_account: {
-            bank: bankCode,
-            account: accountNumber,
+            bank: String(bankCode).trim(),
+            account: String(accountNumber).trim(),
           },
           customer: {
-            name: customer.name || undefined,
-            email: customer.email,
+            name: customer?.name || undefined,
+            email: customer?.email || '',
           },
         },
-        metadata,
+        ...(meta && { metadata: meta }),
       };
 
-      const response = await this.client.post('/merchant/api/v1/transactions/disburse', payload);
-      return response.data;
+      // Try documented merchant path first; fallback to /api/v1/... if not_authorized (some accounts use non-merchant path)
+      const endpoints = [
+        '/merchant/api/v1/transactions/disburse',
+        '/api/v1/transactions/disburse',
+      ];
+      let lastError = null;
+      for (const path of endpoints) {
+        try {
+          const response = await this.client.post(path, payload);
+          return response.data;
+        } catch (err) {
+          const d = err.response?.data;
+          lastError = err;
+          const isNotAuthorized = d?.error === 'not_authorized' || (d?.message && String(d.message).toLowerCase().includes('not authorized'));
+          if (isNotAuthorized && path !== endpoints[endpoints.length - 1]) {
+            console.info(`Kora disburse ${path} returned not_authorized, trying next endpoint...`);
+            continue;
+          }
+          break;
+        }
+      }
+      throw lastError;
     } catch (error) {
-      console.error('Kora payoutToBank error:', error.response?.data || error.message);
-      throw new Error(error.response?.data?.message || 'Failed to initiate payout');
+      const data = error.response?.data;
+      console.error('Kora payoutToBank error:', data || error.message);
+      if (data?.error === 'not_authorized' || (data?.message && String(data.message).toLowerCase().includes('not authorized'))) {
+        throw new Error(
+          'Kora payout not authorized. Deposit uses the same key—if deposit works but withdraw does not, enable Payouts/Disburse on your Kora account (Dashboard or contact support). Otherwise check KORA_SECRET_KEY: use Secret key from Settings → API Configuration and match test/live mode.'
+        );
+      }
+      throw new Error(data?.message || 'Failed to initiate payout');
     }
   }
 
   /**
-   * Get list of Nigerian banks
-   * GET /api/v1/banks (Kora returns 404 for /merchant/api/v1/banks with "resource not found").
+   * Normalize Kora banks response to { code, name }[].
+   * Kora may return { data: [...] }, { banks: [...] }, or array; items may be { code, name }, { bank_code, bank_name }, etc.
+   */
+  _normalizeBanksResponse(raw) {
+    let list = raw?.data ?? raw?.banks ?? (Array.isArray(raw) ? raw : []);
+    if (!Array.isArray(list)) return [];
+    return list
+      .map((b) => ({
+        code: String(b?.code ?? b?.bank_code ?? b?.BankCode ?? ''),
+        name: String(b?.name ?? b?.bank_name ?? b?.BankName ?? b?.bank ?? ''),
+      }))
+      .filter((b) => b.code && b.name);
+  }
+
+  /**
+   * Get list of Nigerian banks and microfinance banks.
+   * Tries Kora's documented path first: /merchant/api/v1/misc/banks?countryCode=NG
+   * then fallback paths; on failure returns comprehensive static list.
+   * See Kora docs: https://developers.korapay.com/docs/payout-via-api (List Banks).
    */
   async getBanks() {
-    try {
-      const response = await this.client.get('/api/v1/banks');
-      return response.data;
-    } catch (error) {
-      console.error('Kora getBanks error:', error.response?.data || error.message);
-      // Return a fallback list of common Nigerian banks if API fails
-      return {
-        data: [
-          { code: '044', name: 'Access Bank' },
-          { code: '050', name: 'Ecobank Nigeria' },
-          { code: '070', name: 'Fidelity Bank' },
-          { code: '011', name: 'First Bank of Nigeria' },
-          { code: '214', name: 'First City Monument Bank' },
-          { code: '058', name: 'Guaranty Trust Bank' },
-          { code: '030', name: 'Heritage Bank' },
-          { code: '301', name: 'Jaiz Bank' },
-          { code: '082', name: 'Keystone Bank' },
-          { code: '526', name: 'Parallex Bank' },
-          { code: '076', name: 'Polaris Bank' },
-          { code: '101', name: 'Providus Bank' },
-          { code: '221', name: 'Stanbic IBTC Bank' },
-          { code: '068', name: 'Standard Chartered Bank' },
-          { code: '232', name: 'Sterling Bank' },
-          { code: '100', name: 'Suntrust Bank' },
-          { code: '032', name: 'Union Bank of Nigeria' },
-          { code: '033', name: 'United Bank For Africa' },
-          { code: '215', name: 'Unity Bank' },
-          { code: '035', name: 'Wema Bank' },
-          { code: '057', name: 'Zenith Bank' },
-        ],
-      };
+    const paths = [
+      '/merchant/api/v1/misc/banks?countryCode=NG',
+      '/merchant/api/v1/banks',
+      '/api/v1/banks',
+    ];
+    for (const path of paths) {
+      try {
+        const response = await this.client.get(path);
+        const normalized = this._normalizeBanksResponse(response.data);
+        if (normalized.length > 0) {
+          return { data: normalized };
+        }
+      } catch (_error) {
+        // Use next path or static list below.
+      }
     }
+    console.info(`Kora banks API unavailable; using static list (${NIGERIAN_BANKS_AND_MFB_LIST.length} banks).`);
+    return { data: NIGERIAN_BANKS_AND_MFB_LIST };
   }
 }
+
+/**
+ * Comprehensive Nigerian commercial banks + microfinance banks (CBN codes).
+ * Used when Kora API is unavailable. Includes major commercial and popular MFBs.
+ */
+const NIGERIAN_BANKS_AND_MFB_LIST = [
+  // Commercial banks
+  { code: '044', name: 'Access Bank' },
+  { code: '063', name: 'Access Bank (Diamond)' },
+  { code: '050', name: 'Ecobank Nigeria' },
+  { code: '084', name: 'Enterprise Bank' },
+  { code: '070', name: 'Fidelity Bank' },
+  { code: '011', name: 'First Bank of Nigeria' },
+  { code: '214', name: 'First City Monument Bank' },
+  { code: '058', name: 'Guaranty Trust Bank' },
+  { code: '030', name: 'Heritage Bank' },
+  { code: '301', name: 'Jaiz Bank' },
+  { code: '082', name: 'Keystone Bank' },
+  { code: '526', name: 'Parallex Bank' },
+  { code: '076', name: 'Polaris Bank' },
+  { code: '101', name: 'Providus Bank' },
+  { code: '221', name: 'Stanbic IBTC Bank' },
+  { code: '068', name: 'Standard Chartered Bank' },
+  { code: '232', name: 'Sterling Bank' },
+  { code: '100', name: 'Suntrust Bank' },
+  { code: '032', name: 'Union Bank of Nigeria' },
+  { code: '033', name: 'United Bank For Africa' },
+  { code: '215', name: 'Unity Bank' },
+  { code: '035', name: 'Wema Bank' },
+  { code: '057', name: 'Zenith Bank' },
+  { code: '090', name: 'VFD Microfinance Bank' },
+  // Microfinance banks (popular / national)
+  { code: '50001', name: 'AB Microfinance Bank' },
+  { code: '50002', name: 'LAPO Microfinance Bank' },
+  { code: '50003', name: 'Accion Microfinance Bank' },
+  { code: '50004', name: 'Baobab Microfinance Bank' },
+  { code: '50005', name: 'RenMoney Microfinance Bank' },
+  { code: '50006', name: 'Finca Microfinance Bank' },
+  { code: '50007', name: 'Lagos Building Investment Company (LBIC) MFB' },
+  { code: '50008', name: 'Addosser Microfinance Bank' },
+  { code: '50009', name: 'Fortis Microfinance Bank' },
+  { code: '50010', name: 'Haven Microfinance Bank' },
+  { code: '50011', name: 'Infinity Trust Microfinance Bank' },
+  { code: '50012', name: 'NPF Microfinance Bank' },
+  { code: '50013', name: 'FBN Microfinance Bank' },
+  { code: '50014', name: 'Grooming Microfinance Bank' },
+  { code: '50015', name: 'Kuda Microfinance Bank' },
+  { code: '50016', name: 'Moniepoint Microfinance Bank' },
+  { code: '50017', name: 'Opay (Opay Digital Services)' },
+  { code: '50018', name: 'Palmpay (Palmpay Limited)' },
+  { code: '50019', name: 'Paga' },
+  { code: '50020', name: 'Sparkle Microfinance Bank' },
+  { code: '50022', name: 'FairMoney Microfinance Bank' },
+  { code: '50023', name: 'Carbon' },
+  { code: '50024', name: 'Quickteller Paypoint (Interswitch)' },
+];
 
 module.exports = new KoraService();

@@ -5,17 +5,20 @@ import { COLORS, FONT_SIZES, FONT_WEIGHTS, BORDER_RADIUS, SPACING } from '../../
 import { formatCurrency } from '../../utils/formatCurrency';
 import { Icon } from '../ui/Icon';
 
+const FALLBACK_RATE = 1600; // NGN per $1 when live rate unavailable
+
 interface WalletCardProps {
   ngnBalance: number;
   usdBalance: number;
+  /** Live NGN per 1 USD from Kora (included in wallet balance API) */
+  exchangeRate?: number | null;
 }
 
-export const WalletCard: React.FC<WalletCardProps> = ({ ngnBalance, usdBalance }) => {
+export const WalletCard: React.FC<WalletCardProps> = ({ ngnBalance, usdBalance, exchangeRate }) => {
   const [isBalanceVisible, setIsBalanceVisible] = useState(true);
-  
-  // Temporary static rate – keep in sync with backend FX rate
-  const EXCHANGE_RATE = 1600; // ₦1,600 = $1
-  const approxUsdFromNgn = ngnBalance > 0 ? ngnBalance / EXCHANGE_RATE : 0;
+
+  const rate = exchangeRate != null && exchangeRate > 0 ? exchangeRate : FALLBACK_RATE;
+  const approxUsdFromNgn = ngnBalance > 0 ? ngnBalance / rate : 0;
 
   const toggleBalanceVisibility = () => {
     setIsBalanceVisible(!isBalanceVisible);
@@ -64,7 +67,7 @@ export const WalletCard: React.FC<WalletCardProps> = ({ ngnBalance, usdBalance }
           <View style={styles.footer}>
             <View>
               <Text style={styles.footerLabel}>Exchange Rate</Text>
-              <Text style={styles.footerValue}>₦1,500 / $1</Text>
+              <Text style={styles.footerValue}>₦{rate.toLocaleString()} / $1</Text>
             </View>
           </View>
         </View>
@@ -107,7 +110,7 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.xs,
   },
   ngnBalance: {
-    fontSize: FONT_SIZES['4xl'],
+    fontSize: FONT_SIZES['3xl'],
     fontWeight: FONT_WEIGHTS.bold,
     color: COLORS.text,
   },

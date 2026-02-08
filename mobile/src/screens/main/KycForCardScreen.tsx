@@ -11,6 +11,7 @@ import {
   ImageBackground,
 } from 'react-native';
 import { useRouter } from 'expo-router';
+import * as ImagePicker from 'expo-image-picker';
 import { COLORS, FONT_SIZES, FONT_WEIGHTS, SPACING, BORDER_RADIUS } from '../../constants/theme';
 import { Input } from '../../components/ui/Input';
 import { Button } from '../../components/ui/Button';
@@ -34,20 +35,39 @@ export const KycForCardScreen = () => {
   const [country, setCountry] = useState('Nigeria');
   const [zipCode, setZipCode] = useState('');
 
-  // Identity
-  const [identityType, setIdentityType] = useState('passport');
+  // Identity (Kora: nin, voters_card, drivers_license, passport)
+  const [identityType, setIdentityType] = useState('nin');
   const [identityNumber, setIdentityNumber] = useState('');
   const [identityImage, setIdentityImage] = useState('');
   const [identityCountry, setIdentityCountry] = useState('Nigeria');
 
-  // Country Identity
-  const [countryIdentityType, setCountryIdentityType] = useState('national_id');
+  // Country Identity (Kora for Nigeria: type must be "bvn")
+  const [countryIdentityType, setCountryIdentityType] = useState('bvn');
   const [countryIdentityNumber, setCountryIdentityNumber] = useState('');
   const [countryIdentityCountry, setCountryIdentityCountry] = useState('Nigeria');
 
   const showToast = (message: string, type: 'info' | 'success' | 'error' = 'info') => {
     setToast({ visible: true, message, type });
     setTimeout(() => setToast({ visible: false, message: '', type: 'info' }), 3000);
+  };
+
+  const pickIdentityImage = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      showToast('Camera roll permission is required to upload ID document', 'error');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [4, 3],
+      base64: true,
+      quality: 0.25, // Keep under nginx default body limit (~1mb)
+    });
+    if (!result.canceled && result.assets[0]?.base64) {
+      setIdentityImage(result.assets[0].base64);
+      showToast('ID document photo added', 'success');
+    }
   };
 
   const handleSubmit = async () => {
@@ -59,6 +79,11 @@ export const KycForCardScreen = () => {
 
     if (!identityNumber || !countryIdentityNumber) {
       showToast('Please provide identity information', 'error');
+      return;
+    }
+
+    if (!identityImage || identityImage.length < 100) {
+      showToast('Please add a photo of your ID document (tap "Add ID document photo")', 'error');
       return;
     }
 
@@ -76,7 +101,7 @@ export const KycForCardScreen = () => {
         identity: {
           type: identityType,
           number: identityNumber,
-          image: identityImage || undefined, // Base64 string or URL from image picker/upload
+          image: identityImage,
           country: identityCountry,
         },
         countryIdentity: {
@@ -186,42 +211,48 @@ export const KycForCardScreen = () => {
             <Text style={styles.sectionTitle}>Identity Document</Text>
             <Input
               label="Identity Type"
-              placeholder="passport, driver_license, etc."
+              placeholder="nin, passport, drivers_license, voters_card"
               value={identityType}
               onChangeText={setIdentityType}
             />
             <Input
               label="Identity Number"
-              placeholder="Enter identity number"
+              placeholder="Enter document number"
               value={identityNumber}
               onChangeText={setIdentityNumber}
             />
+            <TouchableOpacity style={styles.imagePickerButton} onPress={pickIdentityImage}>
+              <Icon name="camera" library="ionicons" size={24} color={COLORS.accent} />
+              <Text style={styles.imagePickerText}>
+                {identityImage ? 'ID document photo added (tap to change)' : 'Add ID document photo (required)'}
+              </Text>
+            </TouchableOpacity>
             <Input
               label="Identity Country"
-              placeholder="Enter country"
+              placeholder="e.g. Nigeria (use NG for code)"
               value={identityCountry}
               onChangeText={setIdentityCountry}
             />
           </View>
 
-          {/* Country Identity */}
+          {/* Country Identity (BVN for Nigeria per Kora) */}
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>National Identity</Text>
+            <Text style={styles.sectionTitle}>National Identity (BVN for Nigeria)</Text>
             <Input
-              label="Identity Type"
-              placeholder="national_id, etc."
+              label="Type"
+              placeholder="bvn (required for Nigeria)"
               value={countryIdentityType}
               onChangeText={setCountryIdentityType}
             />
             <Input
-              label="Identity Number"
-              placeholder="Enter national ID number"
+              label="BVN / National ID Number"
+              placeholder="e.g. 22345678356 for test"
               value={countryIdentityNumber}
               onChangeText={setCountryIdentityNumber}
             />
             <Input
               label="Country"
-              placeholder="Enter country"
+              placeholder="e.g. Nigeria"
               value={countryIdentityCountry}
               onChangeText={setCountryIdentityCountry}
             />
@@ -313,6 +344,22 @@ const styles = StyleSheet.create({
     fontWeight: FONT_WEIGHTS.bold,
     color: COLORS.text,
     marginBottom: SPACING.md,
+  },
+  imagePickerButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.sm,
+    paddingVertical: SPACING.md,
+    paddingHorizontal: SPACING.sm,
+    marginBottom: SPACING.sm,
+    borderWidth: 1,
+    borderColor: COLORS.accent,
+    borderRadius: BORDER_RADIUS.md,
+    borderStyle: 'dashed',
+  },
+  imagePickerText: {
+    fontSize: FONT_SIZES.sm,
+    color: COLORS.accent,
   },
   submitButton: {
     marginTop: SPACING.lg,

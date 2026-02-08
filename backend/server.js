@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const rateLimit = require('express-rate-limit');
 const mongoose = require('mongoose');
 const authRoutes = require('./routes/auth');
 const walletRoutes = require('./routes/wallet');
@@ -12,13 +13,43 @@ const cardsRoutes = require('./routes/cards');
 const supportRoutes = require('./routes/support');
 
 const app = express();
-// Default 5001: macOS AirPlay often uses 5000. Set PORT in .env to override.
 const PORT = process.env.PORT || 5001;
 
-// Middleware
-app.use(cors());
-app.use(express.json({ limit: '5mb' }));
-app.use(express.urlencoded({ extended: true, limit: '5mb' }));
+// CORS: restrict to ALLOWED_ORIGINS (comma-separated) or allow all if unset / *
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean)
+  : ['*'];
+app.use(cors({
+  origin: allowedOrigins.includes('*') ? true : allowedOrigins,
+  credentials: true,
+}));
+
+// General API rate limit: 200 requests per 15 minutes per IP
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: parseInt(process.env.RATE_LIMIT_MAX_API || '200', 10),
+  message: { success: false, message: 'Too many requests. Try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+app.use('/api/', apiLimiter);
+
+// Stricter limit for auth (login, register, forgot-password)
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: parseInt(process.env.RATE_LIMIT_MAX_AUTH || '10', 10),
+  message: { success: false, message: 'Too many attempts. Try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+app.use('/api/auth/login', authLimiter);
+app.use('/api/auth/register', authLimiter);
+app.use('/api/auth/forgot-password', authLimiter);
+app.use('/api/auth/forgot-password/otp', authLimiter);
+
+// KYC uploads include base64 ID image; allow up to 10mb
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -47,6 +78,10 @@ app.get('/api', (req, res) => {
         'POST /auth/register': 'Register user',
         'POST /auth/login': 'Login',
         'GET /auth/me': 'Current user (auth)',
+        'GET /auth/verify-email': 'Verify email (query: token)',
+        'POST /auth/verify-email': 'Verify email (body: token)',
+        'POST /auth/refresh': 'Refresh access token (body: refreshToken)',
+        'POST /auth/logout': 'Logout / revoke refresh (body: refreshToken)',
         'POST /auth/forgot-password': 'Request password reset (email)',
         'POST /auth/verify-reset-token': 'Verify reset token',
         'POST /auth/reset-password': 'Reset password with token',
@@ -99,15 +134,19 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Connect to MongoDB first, then start the server (you always see when DB is ready)
-mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/afrikad')
-  .then(() => {
-    console.log('✅ MongoDB connected');
-    app.listen(PORT, '0.0.0.0', () => {
-      console.log(`🚀 AfriKAD Backend running on http://0.0.0.0:${PORT}`);
+// When run directly, connect and start server; when required (e.g. tests), only export app
+if (require.main === module) {
+  mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/afrikad')
+    .then(() => {
+      console.log('✅ MongoDB connected');
+      app.listen(PORT, '0.0.0.0', () => {
+        console.log(`🚀 AfriKAD Backend running on http://0.0.0.0:${PORT}`);
+      });
+    })
+    .catch((err) => {
+      console.error('❌ MongoDB connection error:', err);
+      process.exit(1);
     });
-  })
-  .catch((err) => {
-    console.error('❌ MongoDB connection error:', err);
-    process.exit(1);
-  });
+}
+
+module.exports = app;

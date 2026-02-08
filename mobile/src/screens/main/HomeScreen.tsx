@@ -19,6 +19,7 @@ export const HomeScreen = () => {
   const { user } = useContext(AuthContext)!;
   const [ngnBalance, setNgnBalance] = useState(0);
   const [usdBalance, setUsdBalance] = useState(0);
+  const [exchangeRate, setExchangeRate] = useState<number | null>(null);
   const [transactions, setTransactions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -75,6 +76,7 @@ export const HomeScreen = () => {
       if (walletResponse.success) {
         setNgnBalance(walletResponse.wallet.ngn || 0);
         setUsdBalance(walletResponse.wallet.usd || 0);
+        setExchangeRate(walletResponse.exchangeRate != null ? walletResponse.exchangeRate : null);
       } else if (showError) {
         setError('Failed to load wallet balance');
         setShowToast(true);
@@ -163,8 +165,8 @@ export const HomeScreen = () => {
           <Text style={styles.greetingSubtext}>Welcome back</Text>
         </View>
 
-        {/* Wallet Card (includes exchange rate + USD summary in footer) */}
-        <WalletCard ngnBalance={ngnBalance} usdBalance={usdBalance} />
+        {/* Wallet Card (live NGN/USD rate from Kora when available) */}
+        <WalletCard ngnBalance={ngnBalance} usdBalance={usdBalance} exchangeRate={exchangeRate} />
 
         {/* Deposit & Withdrawal Card */}
         <DepositWithdrawalCard />

@@ -3,6 +3,7 @@ const { body, validationResult } = require('express-validator');
 const User = require('../models/User');
 const { authenticate } = require('../middleware/auth');
 const koraService = require('../services/kora');
+const { compressBase64Image } = require('../utils/imageHelpers');
 
 const router = express.Router();
 
@@ -49,29 +50,58 @@ router.post('/kyc', [
     const { dateOfBirth, address, countryIdentity, identity } = req.body;
     const dob = typeof dateOfBirth === 'string' ? dateOfBirth.split('T')[0] : dateOfBirth.toISOString().split('T')[0];
 
+    // Normalize for Kora: country must be ISO3166 alpha-2 (e.g. NG); country_identity.type must be "bvn" for Nigeria
+    const toCountryCode = (c) => {
+      if (!c || typeof c !== 'string') return 'NG';
+      const s = c.trim();
+      if (s.length === 2) return s.toUpperCase();
+      if (/nigeria/i.test(s)) return 'NG';
+      return s;
+    };
+    const countryCode = toCountryCode(address.country || countryIdentity.country);
+    const identityCountryCode = toCountryCode(identity.country);
+
+    // Kora only accepts country_identity.type = "bvn" for Nigeria (per docs)
+    const countryIdentityType = (countryCode === 'NG' ? 'bvn' : (countryIdentity.type || 'bvn').toLowerCase().replace(/-/g, '_'));
+
+    // Kora identity.type: nin, voters_card, drivers_license, passport (per docs)
+    const koraIdentityTypes = ['nin', 'voters_card', 'drivers_license', 'passport'];
+    let identityType = (identity.type || 'nin').toLowerCase().replace(/-/g, '_').replace(/\s/g, '_');
+    if (identityType === 'national_id') identityType = 'nin';
+    if (identityType === 'driver_license') identityType = 'drivers_license';
+    if (!koraIdentityTypes.includes(identityType)) identityType = 'nin';
+
+    // Base64 image: strip data URL prefix, then compress so Kora's API doesn't return 413
+    let imageB64 = (identity.image || '').trim();
+    if (imageB64.startsWith('data:')) {
+      const i = imageB64.indexOf(',');
+      if (i !== -1) imageB64 = imageB64.slice(i + 1);
+    }
+    imageB64 = await compressBase64Image(imageB64);
+
     const cardholderData = {
       firstName: user.firstName,
       lastName: user.lastName,
       email: user.email,
-      phone: user.phone,
+      phone: user.phone || undefined,
       dateOfBirth: dob,
       address: {
         street: address.street,
         city: address.city,
         state: address.state,
-        country: address.country,
+        country: countryCode,
         zipCode: address.zipCode,
       },
       countryIdentity: {
-        type: countryIdentity.type,
-        number: countryIdentity.number,
-        country: countryIdentity.country,
+        type: countryIdentityType,
+        number: String(countryIdentity.number).trim(),
+        country: countryCode,
       },
       identity: {
-        type: identity.type,
-        number: identity.number,
-        image: identity.image,
-        country: identity.country,
+        type: identityType,
+        number: String(identity.number).trim(),
+        image: imageB64,
+        country: identityCountryCode,
       },
     };
 
@@ -85,11 +115,77 @@ router.post('/kyc', [
       });
     }
 
-    const cardholderRef = cardholderRes.data?.reference || cardholderRes.reference;
+    // Kora may return reference in data.reference, an array (index 0 = reference), or nested object
+    function findReference(obj, seen = new Set()) {
+      if (!obj || typeof obj !== 'object' || seen.has(obj)) return null;
+      seen.add(obj);
+      if (typeof obj.reference === 'string' && obj.reference.length > 0) return obj.reference;
+      if (typeof obj.cardholder_reference === 'string' && obj.cardholder_reference.length > 0) return obj.cardholder_reference;
+      if (typeof obj.id === 'string' && obj.id.length > 0) return obj.id;
+      for (const v of Object.values(obj)) {
+        const found = findReference(v, seen);
+        if (found) return found;
+      }
+      return null;
+    }
+    // Response can be: object with data.reference, array of 15 elements (chars?), or a plain string (the reference)
+    let cardholderRef = null;
+    if (typeof cardholderRes === 'string' && cardholderRes.length >= 10 && cardholderRes.length <= 200) {
+      cardholderRef = cardholderRes;
+    }
+    const keys = cardholderRes && typeof cardholderRes === 'object' ? Object.keys(cardholderRes) : [];
+    const isArrayLike = keys.length === 15 && keys.every((k, i) => String(i) === k);
+    const arr = !cardholderRef && Array.isArray(cardholderRes) ? cardholderRes : (!cardholderRef && isArrayLike ? Array.from({ length: 15 }, (_, i) => cardholderRes[i]) : null);
+    if (arr && arr.length > 0) {
+      for (let i = 0; i < arr.length; i++) {
+        const item = arr[i];
+        if (typeof item === 'string' && item.length >= 10) {
+          const looksLikeBase64 = item.length > 1000 || item.startsWith('/9j') || item.startsWith('iVBOR');
+          if (!looksLikeBase64) {
+            cardholderRef = item;
+            break;
+          }
+        }
+        if (item && typeof item === 'object' && !Array.isArray(item)) {
+          const ref = item.reference ?? item.cardholder_reference ?? item.id ?? findReference(item);
+          if (ref) {
+            cardholderRef = ref;
+            break;
+          }
+        }
+      }
+      // If no ref yet, the 15 elements might be 15 chars making up the reference (e.g. response parsed as array of chars)
+      if (!cardholderRef && arr.length === 15) {
+        const joined = arr.map((x) => (typeof x === 'string' ? x : (x != null ? String(x) : ''))).join('');
+        if (joined.length >= 10 && joined.length <= 200 && !joined.includes('undefined')) {
+          cardholderRef = joined;
+          console.info('Kora cardholder ref from joined 15 chars, len=', joined.length);
+        } else {
+          console.warn('Kora joined ref rejected: len=', joined.length, 'preview=', joined.slice(0, 20) + (joined.length > 20 ? '...' : ''));
+        }
+      }
+    }
     if (!cardholderRef) {
+      cardholderRef =
+        cardholderRes?.data?.reference ??
+        cardholderRes?.data?.data?.reference ??
+        cardholderRes?.data?.cardholder_reference ??
+        cardholderRes?.data?.id ??
+        cardholderRes?.data?.data?.cardholder_reference ??
+        cardholderRes?.data?.data?.id ??
+        cardholderRes?.reference ??
+        cardholderRes?.cardholder_reference ??
+        cardholderRes?.id ??
+        findReference(cardholderRes);
+    }
+    if (!cardholderRef) {
+      // Debug: log first element type and shape (no PII)
+      const first = cardholderRes?.[0] ?? cardholderRes?.['0'];
+      const preview = first === undefined ? 'undefined' : typeof first === 'string' ? `string(len=${first.length})` : (typeof first === 'object' && first !== null ? `object(keys=${Object.keys(first).join(',')})` : typeof first);
+      console.warn('Kora cardholder response (keys):', Object.keys(cardholderRes || {}), 'first:', preview);
       return res.status(500).json({
         success: false,
-        message: 'Card holder created but no reference returned.',
+        message: 'Card holder created but no reference returned. Check server logs for response shape.',
       });
     }
 
@@ -116,8 +212,45 @@ router.post('/kyc', [
       });
     }
 
-    const cardReference = cardRes.data?.reference || cardRes.reference;
+    // Kora doc: response is { status, message, data: { reference, ... } }. Some envs return the reference as a plain string or array-like (keys 0-14).
+    const looksLikeRef = (s) => typeof s === 'string' && s.length >= 10 && s.length <= 200 && /^[a-zA-Z0-9_-]+$/.test(s);
+    let cardReference = null;
+    if (typeof cardRes === 'string' && looksLikeRef(cardRes.trim())) {
+      cardReference = cardRes.trim();
+    }
     if (!cardReference) {
+      cardReference =
+        cardRes?.data?.reference ??
+        cardRes?.data?.data?.reference ??
+        cardRes?.reference ??
+        cardRes?.id ??
+        findReference(cardRes?.data) ??
+        findReference(cardRes);
+    }
+    // Treat response or response.data as array-like (15 elements = reference string chars; or string with keys 0..n)
+    const tryArrayLike = (obj) => {
+      if (obj == null) return null;
+      if (typeof obj === 'string' && looksLikeRef(obj.trim())) return obj.trim();
+      if (typeof obj !== 'object') return null;
+      const keys = Object.keys(obj);
+      const isArrayLike = keys.length >= 10 && keys.length <= 200 && keys.every((k, i) => String(i) === k);
+      const len = keys.length;
+      if (!isArrayLike && !(Array.isArray(obj) && obj.length >= 10)) return null;
+      const arr = Array.isArray(obj) ? obj : Array.from({ length: len }, (_, i) => obj[i]);
+      const joined = arr
+        .map((x) => {
+          if (typeof x === 'string') return x;
+          if (typeof x === 'number' && x >= 0 && x <= 255) return String.fromCharCode(x);
+          return x != null ? String(x) : '';
+        })
+        .join('');
+      if (looksLikeRef(joined)) return joined;
+      if (joined.length >= 10 && joined.length <= 200 && !joined.includes('undefined')) return joined;
+      return null;
+    };
+    if (!cardReference) cardReference = tryArrayLike(cardRes?.data) ?? tryArrayLike(cardRes);
+    if (!cardReference) {
+      console.warn('Kora createCard response (keys):', Object.keys(cardRes || {}), 'data keys:', cardRes?.data != null ? Object.keys(cardRes.data) : 'n/a');
       return res.status(500).json({
         success: false,
         message: 'Card creation initiated but no reference returned. Check Kora dashboard.',

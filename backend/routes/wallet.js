@@ -10,13 +10,21 @@ const router = express.Router();
 // All routes require authentication
 router.use(authenticate);
 
-// Get wallet balance
+// Get wallet balance (includes live NGN/USD exchange rate from Kora)
 router.get('/balance', async (req, res) => {
   try {
     const user = await User.findById(req.user._id).select('wallet');
+    let exchangeRate = null;
+    try {
+      const rateData = await koraService.getFxRate('USD', 'NGN');
+      exchangeRate = rateData.rate != null ? rateData.rate : null;
+    } catch (rateErr) {
+      // Keep exchangeRate null; client can use fallback
+    }
     res.json({
       success: true,
       wallet: user.wallet,
+      ...(exchangeRate != null && { exchangeRate }),
     });
   } catch (error) {
     res.status(500).json({
@@ -150,21 +158,26 @@ router.post('/deposit/bank-transfer', [
   }
 });
 
-// Get list of Nigerian banks
+// Get list of Nigerian banks and microfinance banks (for withdraw "Select Bank")
 router.get('/banks', authenticate, async (req, res) => {
   try {
     const banksData = await koraService.getBanks();
-    const banks = banksData?.data || banksData || [];
+    let banks = banksData?.data ?? banksData?.banks ?? (Array.isArray(banksData) ? banksData : []);
+    if (!Array.isArray(banks)) banks = [];
+    banks = banks.map((b) => ({
+      code: String(b?.code ?? b?.bank_code ?? ''),
+      name: String(b?.name ?? b?.bank_name ?? b?.bank ?? ''),
+    })).filter((b) => b.code && b.name);
     res.json({
       success: true,
-      banks: Array.isArray(banks) ? banks : [],
+      banks,
     });
   } catch (error) {
     console.error('Get banks error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to fetch banks.',
-      error: error.message,
+      banks: [],
     });
   }
 });

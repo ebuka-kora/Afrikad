@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -8,9 +8,13 @@ import {
   TouchableOpacity,
   RefreshControl,
   ImageBackground,
+  Dimensions,
+  Modal,
+  Pressable,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
+import { LinearGradient } from 'expo-linear-gradient';
 import { apiService } from '../../services/api';
 import { COLORS, FONT_SIZES, FONT_WEIGHTS, SPACING, BORDER_RADIUS } from '../../constants/theme';
 import { Card } from '../../components/ui/Card';
@@ -18,6 +22,38 @@ import { Icon } from '../../components/ui/Icon';
 import { Button } from '../../components/ui/Button';
 import { formatCurrency } from '../../utils/formatCurrency';
 import { Toast } from '../../components/ui/Toast';
+
+const CARD_ASPECT_RATIO = 1.586; // Standard credit card (85.60 × 53.98 mm)
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const CARD_WIDTH = SCREEN_WIDTH - SPACING.lg * 2;
+const CARD_HEIGHT = CARD_WIDTH / CARD_ASPECT_RATIO;
+
+function DetailRow({
+  label,
+  value,
+  onCopy,
+  right,
+}: {
+  label: string;
+  value: string;
+  onCopy?: () => void;
+  right?: React.ReactNode;
+}) {
+  return (
+    <View style={styles.detailRow}>
+      <Text style={styles.detailLabel}>{label}</Text>
+      <View style={styles.detailValueRow}>
+        <Text style={styles.detailValue}>{value}</Text>
+        {right}
+        {onCopy && (
+          <TouchableOpacity onPress={onCopy} style={styles.detailCopyBtn}>
+            <Icon name="copy-outline" library="ionicons" size={18} color={COLORS.accent} />
+          </TouchableOpacity>
+        )}
+      </View>
+    </View>
+  );
+}
 
 type CardData = {
   reference: string;
@@ -31,6 +67,7 @@ type CardData = {
   balance?: number;
   status?: string;
   holderName?: string;
+  holder_name?: string;
 };
 
 export const VirtualCardScreen = () => {
@@ -39,9 +76,9 @@ export const VirtualCardScreen = () => {
   const [wallet, setWallet] = useState<{ ngn: number; usd: number }>({ ngn: 0, usd: 0 });
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [freezeLoading, setFreezeLoading] = useState(false);
   const [showCvv, setShowCvv] = useState(false);
   const [toast, setToast] = useState({ visible: false, message: '' });
+  const [detailsVisible, setDetailsVisible] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -74,35 +111,10 @@ export const VirtualCardScreen = () => {
     load();
   };
 
-  const copyNumber = async () => {
-    if (!card) return;
-    const num = card.pan || (card.firstSix && card.lastFour ? `${card.firstSix}••••••••${card.lastFour}` : null);
-    if (!num) {
-      setToast({ visible: true, message: 'Card number not available' });
-      return;
-    }
-    await Clipboard.setStringAsync(num.replace(/\s/g, ''));
-    setToast({ visible: true, message: 'Card number copied' });
-  };
-
-  const toggleFreeze = async () => {
-    if (!card || freezeLoading) return;
-    setFreezeLoading(true);
-    try {
-      const isFrozen = card.status === 'suspended';
-      if (isFrozen) {
-        await apiService.activateCard(card.reference);
-        setToast({ visible: true, message: 'Card activated' });
-      } else {
-        await apiService.suspendCard(card.reference);
-        setToast({ visible: true, message: 'Card frozen' });
-      }
-      await load();
-    } catch (e: any) {
-      setToast({ visible: true, message: e.message || 'Action failed' });
-    } finally {
-      setFreezeLoading(false);
-    }
+  const copyToClipboard = async (value: string, label: string) => {
+    if (!value) return;
+    await Clipboard.setStringAsync(value.replace(/\s/g, ''));
+    setToast({ visible: true, message: `${label} copied` });
   };
 
   const displayNumber = card
@@ -117,6 +129,9 @@ export const VirtualCardScreen = () => {
     : '••/••';
   const cvv = card?.cvv ?? '•••';
   const isFrozen = card?.status === 'suspended';
+  const holderName = card?.holderName ?? card?.holder_name ?? 'Card Holder';
+  const brand = (card?.brand ?? 'visa').toLowerCase();
+  const isPending = card?.status === 'pending';
 
   if (loading && !card) {
     return (
@@ -191,64 +206,121 @@ export const VirtualCardScreen = () => {
           <View style={styles.placeholder} />
         </View>
 
-        <Card style={styles.cardContainer}>
-          <View style={[styles.card, isFrozen && styles.cardFrozen]}>
-            {isFrozen && (
-              <View style={styles.frozenBadge}>
-                <Icon name="lock-closed" library="ionicons" size={14} color={COLORS.text} />
-                <Text style={styles.frozenBadgeText}>Frozen</Text>
+        <View style={styles.cardWrapper}>
+          <View style={[styles.cardOuter, isFrozen && styles.cardFrozen]}>
+            <LinearGradient
+              colors={['rgba(30, 35, 32, 0.98)', 'rgba(45, 55, 48, 0.98)', 'rgba(25, 30, 27, 0.98)']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.cardGradient}
+            >
+              {/* Top row: chip + status + brand */}
+              <View style={styles.cardTopRow}>
+                <View style={styles.chip} />
+                <View style={styles.cardTopRight}>
+                  {isFrozen && (
+                    <View style={styles.frozenBadge}>
+                      <Icon name="lock-closed" library="ionicons" size={10} color={COLORS.text} />
+                      <Text style={styles.frozenBadgeText}>Frozen</Text>
+                    </View>
+                  )}
+                  {isPending && (
+                    <View style={styles.pendingBadge}>
+                      <Text style={styles.pendingBadgeText}>Pending</Text>
+                    </View>
+                  )}
+                  <Text style={styles.brandLabel}>{brand === 'mastercard' ? 'Mastercard' : 'Visa'}</Text>
+                </View>
               </View>
-            )}
-            <View style={styles.cardHeader}>
-              <Text style={styles.cardLabel}>USD Balance</Text>
-              <Icon name="card" library="ionicons" size={32} color={COLORS.accent} />
-            </View>
-            <Text style={styles.cardBalance}>{formatCurrency(wallet.usd ?? 0, 'USD')}</Text>
-            <View style={styles.cardNumberContainer}>
-              <Text style={styles.cardNumber}>{displayNumber}</Text>
-            </View>
-            <View style={styles.cardFooter}>
-              <View>
-                <Text style={styles.cardLabel}>Expires</Text>
-                <Text style={styles.cardValue}>{expiry}</Text>
-              </View>
-              <View>
-                <Text style={styles.cardLabel}>CVV</Text>
-                <TouchableOpacity onPress={() => setShowCvv(!showCvv)}>
-                  <Text style={styles.cardValue}>{showCvv ? cvv : '•••'}</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          </View>
-        </Card>
 
-        <View style={styles.actions}>
-          <TouchableOpacity style={styles.actionButton} onPress={copyNumber}>
-            <Icon name="copy-outline" library="ionicons" size={24} color={COLORS.accent} />
-            <Text style={styles.actionText}>Copy Card Number</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.actionButton}
-            onPress={toggleFreeze}
-            disabled={freezeLoading}
-          >
-            <Icon
-              name={isFrozen ? 'lock-open-outline' : 'lock-closed-outline'}
-              library="ionicons"
-              size={24}
-              color={COLORS.accent}
-            />
-            <Text style={styles.actionText}>{isFrozen ? 'Unfreeze' : 'Freeze'} Card</Text>
-          </TouchableOpacity>
+              {/* USD balance */}
+              <Text style={styles.cardBalanceLabel}>USD Balance</Text>
+              <Text style={styles.cardBalance}>{formatCurrency(card?.balance ?? wallet?.usd ?? 0, 'USD')}</Text>
+
+              {/* Card number (4 groups) */}
+              <View style={styles.cardNumberContainer}>
+                <Text style={styles.cardNumber}>{displayNumber}</Text>
+              </View>
+
+              {/* Bottom row: holder name, expiry (CVV only in details) */}
+              <View style={styles.cardBottomRow}>
+                <View style={styles.holderBlock}>
+                  <Text style={styles.cardMetaLabel}>Card Holder</Text>
+                  <Text style={styles.cardHolderName} numberOfLines={1}>{holderName}</Text>
+                </View>
+                <View style={styles.expiryCvvRow}>
+                  <View>
+                    <Text style={styles.cardMetaLabel}>Expires</Text>
+                    <Text style={styles.cardMetaValue}>{expiry}</Text>
+                  </View>
+                </View>
+              </View>
+            </LinearGradient>
+          </View>
         </View>
 
+        <TouchableOpacity
+          style={styles.viewDetailsButton}
+          onPress={() => setDetailsVisible(true)}
+          activeOpacity={0.8}
+        >
+          <Icon name="document-text-outline" library="ionicons" size={22} color={COLORS.accent} />
+          <Text style={styles.viewDetailsText}>View card details</Text>
+          <Icon name="chevron-forward" library="ionicons" size={20} color={COLORS.textMuted} />
+        </TouchableOpacity>
+
         <Card style={styles.infoCard}>
-          <Text style={styles.infoTitle}>Card Information</Text>
+          <Text style={styles.infoTitle}>About this card</Text>
           <Text style={styles.infoText}>
-            Use this virtual USD card to pay globally. Funds are converted from your NGN wallet when you pay.
+            Virtual USD card for global payments. Fund from your NGN wallet; spend in USD online and in-app.
           </Text>
         </Card>
       </ScrollView>
+
+      <Modal
+        visible={detailsVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setDetailsVisible(false)}
+      >
+        <Pressable style={styles.modalOverlay} onPress={() => setDetailsVisible(false)}>
+          <Pressable style={styles.modalContent} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Card details</Text>
+              <TouchableOpacity onPress={() => setDetailsVisible(false)} hitSlop={16}>
+                <Icon name="close" library="ionicons" size={28} color={COLORS.text} />
+              </TouchableOpacity>
+            </View>
+            <ScrollView style={styles.detailsScroll} showsVerticalScrollIndicator={false}>
+              <DetailRow
+                label="Card number"
+                value={card?.pan ? card.pan.replace(/(\d{4})/g, '$1 ').trim() : (card?.firstSix && card?.lastFour ? `${card.firstSix} •••• •••• ${card.lastFour}` : '—')}
+                onCopy={card?.pan ? () => copyToClipboard(card.pan.replace(/\s/g, ''), 'Card number') : undefined}
+              />
+              <DetailRow
+                label="CVV"
+                value={showCvv ? (card?.cvv ?? '—') : '•••'}
+                right={
+                  <TouchableOpacity onPress={() => setShowCvv(!showCvv)}>
+                    <Text style={styles.detailReveal}>{showCvv ? 'Hide' : 'Show'}</Text>
+                  </TouchableOpacity>
+                }
+                onCopy={showCvv && card?.cvv ? () => copyToClipboard(card.cvv!, 'CVV') : undefined}
+              />
+              <DetailRow label="Expiry" value={expiry} />
+              <DetailRow label="Card holder" value={holderName} onCopy={() => copyToClipboard(holderName, 'Name')} />
+              <DetailRow label="Brand" value={brand === 'mastercard' ? 'Mastercard' : 'Visa'} />
+              <DetailRow label="USD balance" value={formatCurrency(card?.balance ?? wallet?.usd ?? 0, 'USD')} />
+              <DetailRow label="Status" value={card?.status ? card.status.charAt(0).toUpperCase() + card.status.slice(1) : '—'} />
+              <DetailRow
+                label="Reference"
+                value={card?.reference ?? '—'}
+                onCopy={card?.reference ? () => copyToClipboard(card.reference, 'Reference') : undefined}
+              />
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       {toast.visible && (
         <Toast
@@ -300,59 +372,151 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.lg,
   },
   ctaButton: { alignSelf: 'stretch' },
-  cardContainer: { marginBottom: SPACING.xl, padding: 0, overflow: 'hidden' },
-  card: {
-    backgroundColor: COLORS.primary,
-    padding: SPACING.xl,
+  cardWrapper: {
+    marginBottom: SPACING.xl,
+    alignItems: 'center',
+  },
+  cardOuter: {
+    width: CARD_WIDTH,
+    height: CARD_HEIGHT,
     borderRadius: BORDER_RADIUS.lg,
-    minHeight: 200,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  cardFrozen: { opacity: 0.9 },
+  cardGradient: {
+    flex: 1,
+    padding: SPACING.lg,
     justifyContent: 'space-between',
   },
-  cardFrozen: { opacity: 0.85 },
+  cardTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  chip: {
+    width: 40,
+    height: 32,
+    borderRadius: 6,
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+  },
+  cardTopRight: {
+    alignItems: 'flex-end',
+    gap: SPACING.xs,
+  },
   frozenBadge: {
-    position: 'absolute',
-    top: SPACING.md,
-    right: SPACING.md,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: SPACING.xs,
-    backgroundColor: 'rgba(0,0,0,0.3)',
+    gap: 4,
+    backgroundColor: 'rgba(0,0,0,0.4)',
     paddingHorizontal: SPACING.sm,
-    paddingVertical: SPACING.xs,
+    paddingVertical: 2,
     borderRadius: BORDER_RADIUS.sm,
   },
-  frozenBadgeText: { fontSize: FONT_SIZES.xs, fontWeight: FONT_WEIGHTS.semibold, color: COLORS.text },
-  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  cardLabel: { fontSize: FONT_SIZES.sm, color: 'rgba(255, 255, 255, 0.8)', marginBottom: SPACING.xs },
-  cardBalance: {
-    fontSize: FONT_SIZES['3xl'],
-    fontWeight: FONT_WEIGHTS.bold,
-    color: COLORS.text,
-    marginVertical: SPACING.md,
+  frozenBadgeText: { fontSize: 10, fontWeight: FONT_WEIGHTS.semibold, color: COLORS.text },
+  pendingBadge: {
+    backgroundColor: 'rgba(255, 193, 7, 0.25)',
+    paddingHorizontal: SPACING.sm,
+    paddingVertical: 2,
+    borderRadius: BORDER_RADIUS.sm,
   },
-  cardNumberContainer: { marginVertical: SPACING.lg },
-  cardNumber: {
+  pendingBadgeText: { fontSize: 10, fontWeight: FONT_WEIGHTS.semibold, color: COLORS.warning },
+  brandLabel: {
+    fontSize: FONT_SIZES.sm,
+    fontWeight: FONT_WEIGHTS.bold,
+    color: 'rgba(255, 255, 255, 0.95)',
+    letterSpacing: 0.5,
+  },
+  cardBalanceLabel: {
+    fontSize: FONT_SIZES.xs,
+    color: 'rgba(255, 255, 255, 0.7)',
+    marginBottom: 2,
+  },
+  cardBalance: {
     fontSize: FONT_SIZES.xl,
     fontWeight: FONT_WEIGHTS.bold,
     color: COLORS.text,
-    letterSpacing: 2,
+    marginBottom: SPACING.sm,
   },
-  cardFooter: { flexDirection: 'row', justifyContent: 'space-between' },
-  cardValue: { fontSize: FONT_SIZES.md, fontWeight: FONT_WEIGHTS.semibold, color: COLORS.text },
-  actions: { flexDirection: 'row', gap: SPACING.md, marginBottom: SPACING.xl },
-  actionButton: {
-    flex: 1,
+  cardNumberContainer: { marginVertical: SPACING.xs },
+  cardNumber: {
+    fontSize: 15,
+    fontWeight: FONT_WEIGHTS.semibold,
+    color: COLORS.text,
+    letterSpacing: 3,
+  },
+  cardBottomRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-end',
+  },
+  holderBlock: { flex: 1, marginRight: SPACING.md, minWidth: 0 },
+  cardMetaLabel: {
+    fontSize: 10,
+    color: 'rgba(255, 255, 255, 0.65)',
+    marginBottom: 2,
+  },
+  cardHolderName: {
+    fontSize: FONT_SIZES.sm,
+    fontWeight: FONT_WEIGHTS.semibold,
+    color: COLORS.text,
+  },
+  expiryCvvRow: {
+    flexDirection: 'row',
+    gap: SPACING.lg,
+    alignItems: 'flex-end',
+  },
+  cardMetaValue: {
+    fontSize: FONT_SIZES.sm,
+    fontWeight: FONT_WEIGHTS.semibold,
+    color: COLORS.text,
+  },
+  viewDetailsButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: 'space-between',
     gap: SPACING.sm,
-    padding: SPACING.md,
-    backgroundColor: 'rgba(77, 98, 80, 0.30)',
+    paddingVertical: SPACING.md,
+    paddingHorizontal: SPACING.lg,
+    marginBottom: SPACING.xl,
+    backgroundColor: 'rgba(77, 98, 80, 0.25)',
     borderRadius: BORDER_RADIUS.md,
     borderWidth: 1,
-    borderColor: COLORS.borderLight,
+    borderColor: 'rgba(57, 255, 20, 0.2)',
   },
-  actionText: { fontSize: FONT_SIZES.sm, color: COLORS.text, fontWeight: FONT_WEIGHTS.medium },
+  viewDetailsText: { fontSize: FONT_SIZES.md, color: COLORS.text, fontWeight: FONT_WEIGHTS.medium },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: COLORS.surface,
+    borderTopLeftRadius: BORDER_RADIUS.xl,
+    borderTopRightRadius: BORDER_RADIUS.xl,
+    maxHeight: '85%',
+    paddingBottom: SPACING.xxl,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: SPACING.lg,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  modalTitle: { fontSize: FONT_SIZES.xl, fontWeight: FONT_WEIGHTS.bold, color: COLORS.text },
+  detailsScroll: { padding: SPACING.lg },
+  detailRow: { marginBottom: SPACING.lg },
+  detailLabel: { fontSize: FONT_SIZES.sm, color: COLORS.textMuted, marginBottom: SPACING.xs },
+  detailValueRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: SPACING.sm },
+  detailValue: { fontSize: FONT_SIZES.md, color: COLORS.text, fontWeight: FONT_WEIGHTS.medium, flex: 1 },
+  detailCopyBtn: { padding: SPACING.xs },
+  detailReveal: { fontSize: FONT_SIZES.sm, color: COLORS.accent, fontWeight: FONT_WEIGHTS.medium },
   infoCard: { marginBottom: SPACING.lg },
   infoTitle: { fontSize: FONT_SIZES.lg, fontWeight: FONT_WEIGHTS.semibold, color: COLORS.text, marginBottom: SPACING.sm },
   infoText: { fontSize: FONT_SIZES.md, color: COLORS.textSecondary, lineHeight: 22 },

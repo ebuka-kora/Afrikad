@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { View, Text, StyleSheet, ScrollView, SafeAreaView, TouchableOpacity, KeyboardAvoidingView, Platform, ImageBackground, ActivityIndicator } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
 import { apiService } from '../../services/api';
 import { COLORS, FONT_SIZES, FONT_WEIGHTS, SPACING, BORDER_RADIUS } from '../../constants/theme';
@@ -40,12 +40,14 @@ export const FundWalletScreen = () => {
   const [waitingForPayment, setWaitingForPayment] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const autoNavigateTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const depositStatusRef = useRef<DepositStatus | null>(null);
+  depositStatusRef.current = depositStatus;
 
   // Poll for deposit status when user clicks Done and we're waiting
   useEffect(() => {
     if (!waitingForPayment || !reference) return;
     if (depositStatus === 'completed' || depositStatus === 'failed') {
-      // Show result for 2 seconds then auto-navigate
+      // Show success/rejected, then after 2 seconds take user back to home (before any reset)
       autoNavigateTimeoutRef.current = setTimeout(() => {
         router.replace('/(tabs)');
       }, 2000);
@@ -92,6 +94,25 @@ export const FundWalletScreen = () => {
       if (autoNavigateTimeoutRef.current) clearTimeout(autoNavigateTimeoutRef.current);
     };
   }, [waitingForPayment, reference, depositStatus, expectedAmount, router]);
+
+  // Reset only when user opens Deposit again *after* having been taken back to home (so they see success/rejected first, then home, then fresh form)
+  useFocusEffect(
+    useCallback(() => {
+      const status = depositStatusRef.current;
+      if (status === 'completed' || status === 'failed') {
+        setBankAccount(null);
+        setExpectedAmount(null);
+        setReference(null);
+        setDepositStatus(null);
+        setCreditedAmount(null);
+        setWalletBalanceNgn(null);
+        setWaitingForPayment(false);
+        setAmount('');
+        setError('');
+      }
+      return () => {};
+    }, [])
+  );
 
   const handleFund = async () => {
     const amountNum = parseFloat(amount);

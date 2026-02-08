@@ -62,3 +62,14 @@ The backend integrates with Kora API for:
 - Card payment authorization
 
 Make sure to set `KORA_API_KEY`, `KORA_SECRET_KEY`, and `KORA_BASE_URL` in `.env`.
+
+## Nginx / reverse proxy (413 Request Entity Too Large)
+
+If the API sits behind nginx and KYC (card) uploads return **413 Request Entity Too Large**, increase the body limit in your nginx config:
+
+```nginx
+# In your server { } or http { } block:
+client_max_body_size 10M;
+```
+
+Then reload nginx: `sudo nginx -s reload`

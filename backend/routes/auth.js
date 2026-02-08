@@ -3,17 +3,38 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const { body, validationResult } = require('express-validator');
 const User = require('../models/User');
+const RefreshToken = require('../models/RefreshToken');
 const { authenticate } = require('../middleware/auth');
+const { sendMail } = require('../utils/emailService');
 
 const RESET_TOKEN_EXPIRY_MS = 60 * 60 * 1000; // 1 hour
 const OTP_EXPIRY_MS = 15 * 60 * 1000; // 15 minutes
+const EMAIL_VERIFICATION_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
+const ACCESS_TOKEN_EXPIRY = '15m';
+const REFRESH_TOKEN_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 const router = express.Router();
 
-// Generate JWT token
+// Access token (short-lived)
+const generateAccessToken = (userId) => {
+  return jwt.sign({ userId }, process.env.JWT_SECRET, { expiresIn: ACCESS_TOKEN_EXPIRY });
+};
+
+// Legacy: long-lived token (for backward compatibility if client doesn't use refresh)
 const generateToken = (userId) => {
   return jwt.sign({ userId }, process.env.JWT_SECRET, { expiresIn: '7d' });
 };
+
+async function createRefreshToken(userId) {
+  const token = crypto.randomBytes(40).toString('hex');
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  await RefreshToken.create({
+    userId,
+    tokenHash,
+    expiresAt: new Date(Date.now() + REFRESH_TOKEN_EXPIRY_MS),
+  });
+  return token;
+}
 
 // Register
 router.post('/register', [
@@ -50,7 +71,9 @@ router.post('/register', [
       }
     }
 
-    // Create user (virtual card is created via POST /api/cards/kyc after KYC)
+    const emailVerificationToken = crypto.randomBytes(32).toString('hex');
+    const emailVerificationTokenHash = crypto.createHash('sha256').update(emailVerificationToken).digest('hex');
+
     const user = new User({
       email,
       password,
@@ -58,16 +81,30 @@ router.post('/register', [
       lastName,
       phone,
       username,
+      emailVerificationToken: emailVerificationTokenHash,
+      emailVerificationExpires: new Date(Date.now() + EMAIL_VERIFICATION_EXPIRY_MS),
     });
 
     await user.save();
 
-    const token = generateToken(user._id);
+    const baseUrl = (process.env.BASE_URL || 'http://localhost:5001').replace(/\/$/, '');
+    const verifyUrl = `${baseUrl}/api/auth/verify-email?token=${emailVerificationToken}`;
+    await sendMail({
+      to: email,
+      subject: 'Verify your AfriKAD email',
+      text: `Click to verify: ${verifyUrl}`,
+      html: `<p>Click the link to verify your email:</p><p><a href="${verifyUrl}">${verifyUrl}</a></p><p>Link expires in 24 hours.</p>`,
+    });
+
+    const token = generateAccessToken(user._id);
+    const refreshToken = await createRefreshToken(user._id);
 
     res.status(201).json({
       success: true,
-      message: 'User registered successfully.',
+      message: 'User registered successfully. Please check your email to verify your account.',
       token,
+      expiresIn: 900,
+      refreshToken,
       user: {
         id: user._id,
         email: user.email,
@@ -76,6 +113,7 @@ router.post('/register', [
         phone: user.phone,
         username: user.username,
         wallet: user.wallet,
+        emailVerified: user.emailVerified,
       },
     });
   } catch (error) {
@@ -117,12 +155,15 @@ router.post('/login', [
       });
     }
 
-    const token = generateToken(user._id);
+    const token = generateAccessToken(user._id);
+    const refreshToken = await createRefreshToken(user._id);
 
     res.json({
       success: true,
       message: 'Login successful.',
       token,
+      expiresIn: 900,
+      refreshToken,
       user: {
         id: user._id,
         email: user.email,
@@ -132,6 +173,7 @@ router.post('/login', [
         username: user.username,
         wallet: user.wallet,
         role: user.role,
+        emailVerified: user.emailVerified,
       },
     });
   } catch (error) {
@@ -141,6 +183,114 @@ router.post('/login', [
       message: 'Login failed.',
       error: error.message,
     });
+  }
+});
+
+// Verify email (GET or POST with token)
+router.get('/verify-email', async (req, res) => {
+  const token = req.query.token;
+  if (!token) {
+    return res.status(400).json({ success: false, message: 'Token is required.' });
+  }
+  try {
+    const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
+    const user = await User.findOne({
+      emailVerificationToken: hashedToken,
+      emailVerificationExpires: { $gt: Date.now() },
+    }).select('+emailVerificationToken +emailVerificationExpires');
+
+    if (!user) {
+      return res.status(400).json({ success: false, message: 'Invalid or expired verification token.' });
+    }
+
+    user.emailVerified = true;
+    user.emailVerificationToken = undefined;
+    user.emailVerificationExpires = undefined;
+    user.updatedAt = new Date();
+    await user.save({ validateBeforeSave: false });
+
+    res.json({
+      success: true,
+      message: 'Email verified successfully. You can now log in.',
+    });
+  } catch (error) {
+    console.error('Verify email error:', error);
+    res.status(500).json({ success: false, message: 'Verification failed.', error: error.message });
+  }
+});
+router.post('/verify-email', [
+  body('token').notEmpty(),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, errors: errors.array() });
+    }
+    const hashedToken = crypto.createHash('sha256').update(req.body.token).digest('hex');
+    const user = await User.findOne({
+      emailVerificationToken: hashedToken,
+      emailVerificationExpires: { $gt: Date.now() },
+    }).select('+emailVerificationToken +emailVerificationExpires');
+
+    if (!user) {
+      return res.status(400).json({ success: false, message: 'Invalid or expired verification token.' });
+    }
+
+    user.emailVerified = true;
+    user.emailVerificationToken = undefined;
+    user.emailVerificationExpires = undefined;
+    user.updatedAt = new Date();
+    await user.save({ validateBeforeSave: false });
+
+    res.json({
+      success: true,
+      message: 'Email verified successfully.',
+    });
+  } catch (error) {
+    console.error('Verify email error:', error);
+    res.status(500).json({ success: false, message: 'Verification failed.', error: error.message });
+  }
+});
+
+// Refresh access token
+router.post('/refresh', [
+  body('refreshToken').notEmpty(),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, errors: errors.array() });
+    }
+    const tokenHash = crypto.createHash('sha256').update(req.body.refreshToken).digest('hex');
+    const ref = await RefreshToken.findOne({ tokenHash, expiresAt: { $gt: Date.now() } });
+    if (!ref) {
+      return res.status(401).json({ success: false, message: 'Invalid or expired refresh token.' });
+    }
+    const newAccessToken = generateAccessToken(ref.userId);
+    res.json({
+      success: true,
+      token: newAccessToken,
+      expiresIn: 900,
+    });
+  } catch (error) {
+    console.error('Refresh token error:', error);
+    res.status(500).json({ success: false, message: 'Refresh failed.', error: error.message });
+  }
+});
+
+// Logout (revoke refresh token)
+router.post('/logout', [
+  body('refreshToken').optional(),
+], async (req, res) => {
+  try {
+    const token = req.body.refreshToken;
+    if (token) {
+      const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+      await RefreshToken.deleteOne({ tokenHash });
+    }
+    res.json({ success: true, message: 'Logged out.' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Logout failed.', error: error.message });
   }
 });
 
@@ -159,6 +309,7 @@ router.get('/me', authenticate, async (req, res) => {
         username: user.username,
         wallet: user.wallet,
         role: user.role,
+        emailVerified: user.emailVerified,
       },
     });
   } catch (error) {
@@ -326,8 +477,15 @@ router.post('/forgot-password', [
     user.updatedAt = new Date();
     await user.save({ validateBeforeSave: false });
 
-    // In production: send email with link containing resetToken (e.g. https://app.example.com/reset-password?token=resetToken)
-    // For now we return the token for development; remove in production and use email only
+    const baseUrl = (process.env.BASE_URL || 'http://localhost:5001').replace(/\/$/, '');
+    const resetUrl = `${baseUrl}/reset-password?token=${resetToken}`;
+    await sendMail({
+      to: user.email,
+      subject: 'AfriKAD – Reset your password',
+      text: `Reset link (expires in 1 hour): ${resetUrl}`,
+      html: `<p>Click the link to reset your password:</p><p><a href="${resetUrl}">${resetUrl}</a></p><p>Link expires in 1 hour. If you didn't request this, ignore this email.</p>`,
+    });
+
     const isDev = process.env.NODE_ENV !== 'production';
     res.json({
       success: true,
@@ -456,7 +614,13 @@ router.post('/forgot-password/otp', [
     user.updatedAt = new Date();
     await user.save({ validateBeforeSave: false });
 
-    // In production: send OTP via SMS or email
+    await sendMail({
+      to: user.email,
+      subject: 'AfriKAD – Your password reset OTP',
+      text: `Your OTP is: ${otp}. It expires in 15 minutes.`,
+      html: `<p>Your password reset OTP is: <strong>${otp}</strong></p><p>It expires in 15 minutes. If you didn't request this, ignore this email.</p>`,
+    });
+
     const isDev = process.env.NODE_ENV !== 'production';
     res.json({
       success: true,
