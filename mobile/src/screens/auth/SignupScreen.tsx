@@ -6,7 +6,7 @@ import { COLORS, FONT_SIZES, FONT_WEIGHTS, SPACING } from '../../constants/theme
 import { Input } from '../../components/ui/Input';
 import { Button } from '../../components/ui/Button';
 import { Icon } from '../../components/ui/Icon';
-import { validateEmail, validatePassword } from '../../utils/validation';
+import { validateEmail, validatePassword, validateUsername, validatePhone } from '../../utils/validation';
 import { Toast } from '../../components/ui/Toast';
 
 export const SignupScreen = () => {
@@ -14,17 +14,41 @@ export const SignupScreen = () => {
   const { register } = useContext(AuthContext)!;
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
+  const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [showToast, setShowToast] = useState(false);
 
   const handleSignup = async () => {
-    if (!firstName || !lastName || !email || !password) {
+    if (
+      !firstName ||
+      !lastName ||
+      !username.trim() ||
+      !email ||
+      !password ||
+      !confirmPassword ||
+      !phone.trim()
+    ) {
       setError('Please fill in all required fields');
+      setShowToast(true);
+      return;
+    }
+
+    if (!validatePhone(phone.trim())) {
+      setError('Please enter a valid phone number');
+      setShowToast(true);
+      return;
+    }
+
+    const usernameValidation = validateUsername(username);
+    if (!usernameValidation.valid) {
+      setError(usernameValidation.message || 'Invalid username');
       setShowToast(true);
       return;
     }
@@ -42,11 +66,24 @@ export const SignupScreen = () => {
       return;
     }
 
+    if (password !== confirmPassword) {
+      setError('Passwords do not match');
+      setShowToast(true);
+      return;
+    }
+
     setLoading(true);
     setError('');
 
     try {
-      await register({ firstName, lastName, email, phone, password });
+      await register({
+        firstName,
+        lastName,
+        username: username.trim().toLowerCase(),
+        email,
+        phone: phone.trim(),
+        password,
+      });
       router.push('/(auth)/otp-verification');
     } catch (err: any) {
       setError(err.message || 'Registration failed');
@@ -91,6 +128,16 @@ export const SignupScreen = () => {
           />
 
           <Input
+            label="Username"
+            placeholder="yourname"
+            value={username}
+            onChangeText={setUsername}
+            autoCapitalize="none"
+            autoCorrect={false}
+            leftIcon={<Icon name="at-outline" library="ionicons" size={20} color={COLORS.textMuted} />}
+          />
+
+          <Input
             label="Email"
             placeholder="your@email.com"
             value={email}
@@ -102,7 +149,7 @@ export const SignupScreen = () => {
           />
 
           <Input
-            label="Phone (Optional)"
+            label="Phone"
             placeholder="+234 801 234 5678"
             value={phone}
             onChangeText={setPhone}
@@ -121,6 +168,25 @@ export const SignupScreen = () => {
               <TouchableOpacity onPress={() => setShowPassword(!showPassword)}>
                 <Icon
                   name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+                  library="ionicons"
+                  size={20}
+                  color={COLORS.textMuted}
+                />
+              </TouchableOpacity>
+            }
+          />
+
+          <Input
+            label="Confirm password"
+            placeholder="Re-enter your password"
+            value={confirmPassword}
+            onChangeText={setConfirmPassword}
+            secureTextEntry={!showConfirmPassword}
+            autoCapitalize="none"
+            rightIcon={
+              <TouchableOpacity onPress={() => setShowConfirmPassword(!showConfirmPassword)}>
+                <Icon
+                  name={showConfirmPassword ? 'eye-off-outline' : 'eye-outline'}
                   library="ionicons"
                   size={20}
                   color={COLORS.textMuted}

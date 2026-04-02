@@ -9,6 +9,8 @@ interface User {
   email: string;
   phone?: string;
   username?: string;
+  /** Data URL or HTTPS URL from server */
+  profileImage?: string;
 }
 
 interface AuthContextType {
@@ -31,6 +33,22 @@ export const useAuth = () => {
   }
   return context;
 };
+
+/** Strip developer-style messages; keep user-friendly copy */
+function simplifyAuthError(raw: string | undefined): string {
+  if (!raw || typeof raw !== 'string') return '';
+  const t = raw.trim();
+  if (/network|ERR_NETWORK|timeout/i.test(t)) {
+    return "We can't reach AfriKAD right now. Check your internet and try again.";
+  }
+  if (/401|403|unauthoriz|invalid token/i.test(t)) {
+    return 'Your session expired. Please sign in again.';
+  }
+  if (/500|502|503|server/i.test(t)) {
+    return 'Something went wrong on our side. Please try again in a few minutes.';
+  }
+  return t;
+}
 
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<User | null>(null);
@@ -68,11 +86,12 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     } catch (error: any) {
       const isNetworkError =
         error.message === 'Network Error' || error.code === 'ERR_NETWORK' || !error.response;
-      const msg = error.response?.data?.message
-        || (isNetworkError
-          ? 'Cannot reach server. Ensure the backend is running and on the same network. On a physical device, set EXPO_PUBLIC_API_HOST to your computer’s IP.'
-          : error.message)
-        || 'Login failed';
+      const serverMsg = error.response?.data?.message;
+      const msg =
+        serverMsg ||
+        (isNetworkError
+          ? "We can't reach AfriKAD right now. Check your internet, then try again. If it keeps happening, try again in a few minutes."
+          : simplifyAuthError(error.message)) || "Sign in didn't work. Check your email and password and try again.";
       throw new Error(msg);
     }
   };
@@ -86,11 +105,12 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     } catch (error: any) {
       const isNetworkError =
         error.message === 'Network Error' || error.code === 'ERR_NETWORK' || !error.response;
-      const msg = error.response?.data?.message
-        || (isNetworkError
-          ? 'Cannot reach server. Ensure the backend is running and on the same network. On a physical device, set EXPO_PUBLIC_API_HOST to your computer’s IP.'
-          : error.message)
-        || 'Registration failed';
+      const serverMsg = error.response?.data?.message;
+      const msg =
+        serverMsg ||
+        (isNetworkError
+          ? "We can't reach AfriKAD right now. Check your internet, then try again."
+          : simplifyAuthError(error.message)) || "We couldn't create your account. Try again in a moment.";
       throw new Error(msg);
     }
   };

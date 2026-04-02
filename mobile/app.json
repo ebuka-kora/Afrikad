@@ -38,7 +38,8 @@
       "scope": "/",
       "orientation": "portrait",
       "lang": "en",
-      "bundler": "metro"
+      "bundler": "metro",
+      "barStyle": "black-translucent"
     },
     "plugins": [
       "expo-router"

@@ -107,6 +107,7 @@ export default function TabsLayout() {
       <Tabs.Screen name="payment" options={{ href: null }} />
       <Tabs.Screen name="kyc-card" options={{ href: null }} />
       <Tabs.Screen name="notifications" options={{ href: null }} />
+      <Tabs.Screen name="transaction/[id]" options={{ href: null }} />
     </Tabs>
   );
 }

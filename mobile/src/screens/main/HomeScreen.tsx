@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useContext } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, SafeAreaView, ImageBackground, RefreshControl } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, SafeAreaView, ImageBackground, Image, RefreshControl } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AuthContext } from '../../context/AuthContext';
 import { apiService } from '../../services/api';
+import { getReadNotificationIds, pruneReadNotificationIds } from '../../utils/notificationReadState';
+import { getNotificationIdsFromTransactions } from '../../utils/notificationsFromTransactions';
+import { normalizeTransactionRow, type NormalizedTransaction } from '../../utils/transactionDisplay';
 import { COLORS, FONT_SIZES, FONT_WEIGHTS, SPACING, BORDER_RADIUS } from '../../constants/theme';
 import { WalletCard } from '../../components/afrikad/WalletCard';
 import { DepositWithdrawalCard } from '../../components/afrikad/DepositWithdrawalCard';
@@ -12,15 +14,13 @@ import { Card } from '../../components/ui/Card';
 import { Icon } from '../../components/ui/Icon';
 import { Toast } from '../../components/ui/Toast';
 
-const READ_NOTIFICATIONS_KEY = '@afrikad_read_notifications';
-
 export const HomeScreen = () => {
   const router = useRouter();
   const { user } = useContext(AuthContext)!;
   const [ngnBalance, setNgnBalance] = useState(0);
   const [usdBalance, setUsdBalance] = useState(0);
   const [exchangeRate, setExchangeRate] = useState<number | null>(null);
-  const [transactions, setTransactions] = useState<any[]>([]);
+  const [transactions, setTransactions] = useState<NormalizedTransaction[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
@@ -43,17 +43,11 @@ export const HomeScreen = () => {
     try {
       const response = await apiService.getTransactions();
       if (response.success && Array.isArray(response.transactions) && response.transactions.length > 0) {
-        // Get list of read notification IDs from storage
-        const readNotificationsJson = await AsyncStorage.getItem(READ_NOTIFICATIONS_KEY);
-        const readNotifications: string[] = readNotificationsJson ? JSON.parse(readNotificationsJson) : [];
-        
-        // Generate notification IDs the same way NotificationsScreen does
-        const notificationIds = response.transactions.slice(0, 20).map((tx: any, index: number) => 
-          String(tx._id ?? index)
-        );
-        
-        // Count unread: notifications that are not in the read list
-        const unreadCount = notificationIds.filter((id: string) => !readNotifications.includes(id)).length;
+        const txs = response.transactions;
+        const ids = getNotificationIdsFromTransactions(txs);
+        await pruneReadNotificationIds(ids);
+        const readIds = await getReadNotificationIds();
+        const unreadCount = ids.filter((id) => !readIds.includes(id)).length;
         setUnreadNotificationCount(unreadCount);
       } else {
         setUnreadNotificationCount(0);
@@ -85,14 +79,7 @@ export const HomeScreen = () => {
       if (transactionsResponse.success && Array.isArray(transactionsResponse.transactions)) {
         const normalizedTransactions = transactionsResponse.transactions
           .slice(0, 4)
-          .map((tx: any) => ({
-            id: String(tx._id ?? tx.id ?? ''),
-            merchant: String(tx.merchantName ?? tx.description ?? '—'),
-            amount: Number(tx.amount) || 0,
-            currency: (tx.currency === 'USD' ? 'USD' : 'NGN') as 'NGN' | 'USD',
-            status: (tx.status === 'failed' ? 'failed' : 'success') as 'success' | 'failed',
-            date: tx.createdAt ? String(tx.createdAt) : '',
-          }));
+          .map((tx: any) => normalizeTransactionRow(tx));
         setTransactions(normalizedTransactions);
         
         // Calculate unread notification count
@@ -148,13 +135,28 @@ export const HomeScreen = () => {
               onPress={() => router.push('/(tabs)/notifications')}
             >
               <Icon name="notifications-outline" library="ionicons" size={20} color={COLORS.textMuted} />
-              {unreadNotificationCount > 0 && <View style={styles.badge} />}
+              {unreadNotificationCount > 0 ? (
+                <View style={styles.badge}>
+                  <Text style={styles.badgeText}>
+                    {unreadNotificationCount > 99 ? '99+' : String(unreadNotificationCount)}
+                  </Text>
+                </View>
+              ) : null}
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.iconButton, styles.profileButton]}
+              style={[
+                styles.iconButton,
+                user?.profileImage ? styles.profileButtonWithImage : styles.profileButton,
+                styles.profileHeaderHit,
+              ]}
               onPress={() => router.push('/(tabs)/profile')}
+              activeOpacity={0.85}
             >
-              <Icon name="person" library="ionicons" size={20} color={COLORS.text} />
+              {user?.profileImage ? (
+                <Image source={{ uri: user.profileImage }} style={styles.headerProfileImage} />
+              ) : (
+                <Icon name="person" library="ionicons" size={22} color={COLORS.text} />
+              )}
             </TouchableOpacity>
           </View>
         </View>
@@ -187,6 +189,9 @@ export const HomeScreen = () => {
               currency={transaction.currency}
               status={transaction.status}
               date={transaction.date}
+              source={transaction.source}
+              txType={transaction.type}
+              onPress={() => router.push(`/(tabs)/transaction/${encodeURIComponent(transaction.id)}`)}
             />
           ))}
         </View>
@@ -260,14 +265,35 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.primary,
     borderColor: COLORS.accent,
   },
+  /** Slightly larger than other header icons so the profile photo reads clearly */
+  profileHeaderHit: {
+    width: 50,
+    height: 58,
+    borderRadius: 100,
+  },
+  profileButtonWithImage: {
+    backgroundColor: 'transparent',
+    padding: 0,
+    overflow: 'hidden',
+    borderWidth: 0,
+    borderColor: 'transparent',
+  },
+  headerProfileImage: {
+    width: 50,
+    height: 50,
+    borderRadius: 100,
+  },
   badge: {
     position: 'absolute',
-    top: 4,
-    right: 4,
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: COLORS.primary,
+    top: 0,
+    right: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  badgeText: {
+    fontSize: 14,
+    fontWeight: FONT_WEIGHTS.bold,
+    color: COLORS.accent,
   },
   greeting: {
     marginBottom: SPACING.lg,

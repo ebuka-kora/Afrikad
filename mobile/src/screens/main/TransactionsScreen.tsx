@@ -1,23 +1,31 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, FlatList, SafeAreaView, TouchableOpacity, ActivityIndicator, ImageBackground } from 'react-native';
+import { useRouter } from 'expo-router';
+import {
+  View,
+  Text,
+  StyleSheet,
+  FlatList,
+  SafeAreaView,
+  TouchableOpacity,
+  ActivityIndicator,
+  ImageBackground,
+  ScrollView,
+  Platform,
+} from 'react-native';
 import { apiService } from '../../services/api';
 import { COLORS, FONT_SIZES, FONT_WEIGHTS, SPACING } from '../../constants/theme';
 import { TransactionItem } from '../../components/afrikad/TransactionItem';
 import { Icon } from '../../components/ui/Icon';
+import type { NormalizedTransaction } from '../../utils/transactionDisplay';
+import { normalizeTransactionRow } from '../../utils/transactionDisplay';
 
-interface Transaction {
-  id: string;
-  merchant: string;
-  amount: number;
-  currency: 'NGN' | 'USD';
-  status: 'success' | 'failed';
-  date: string;
-}
+type StatusFilter = 'all' | 'success' | 'failed' | 'pending';
 
 export const TransactionsScreen = () => {
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const router = useRouter();
+  const [transactions, setTransactions] = useState<NormalizedTransaction[]>([]);
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState<'all' | 'success' | 'failed'>('all');
+  const [filter, setFilter] = useState<StatusFilter>('all');
 
   useEffect(() => {
     loadTransactions();
@@ -28,14 +36,7 @@ export const TransactionsScreen = () => {
       setLoading(true);
       const response = await apiService.getTransactions();
       if (response.success && Array.isArray(response.transactions)) {
-        const normalizedTransactions: Transaction[] = response.transactions.map((tx: any) => ({
-          id: String(tx._id ?? tx.id ?? ''),
-          merchant: String(tx.merchantName ?? tx.description ?? '—'),
-          amount: Number(tx.amount) || 0,
-          currency: (tx.currency === 'USD' ? 'USD' : 'NGN') as 'NGN' | 'USD',
-          status: (tx.status === 'failed' ? 'failed' : 'success') as 'success' | 'failed',
-          date: tx.createdAt ? String(tx.createdAt) : '',
-        }));
+        const normalizedTransactions = response.transactions.map((tx: any) => normalizeTransactionRow(tx));
         setTransactions(normalizedTransactions);
       } else {
         setTransactions([]);
@@ -53,15 +54,25 @@ export const TransactionsScreen = () => {
     return tx.status === filter;
   });
 
-  const renderTransaction = ({ item }: { item: Transaction }) => (
+  const renderTransaction = ({ item }: { item: NormalizedTransaction }) => (
     <TransactionItem
       merchant={item.merchant}
       amount={item.amount}
       currency={item.currency}
       status={item.status}
       date={item.date}
+      source={item.source}
+      txType={item.type}
+      onPress={() => router.push(`/(tabs)/transaction/${encodeURIComponent(item.id)}`)}
     />
   );
+
+  const filterChips: { key: StatusFilter; label: string }[] = [
+    { key: 'all', label: 'All' },
+    { key: 'success', label: 'Success' },
+    { key: 'failed', label: 'Failed' },
+    { key: 'pending', label: 'Pending' },
+  ];
 
   return (
     <ImageBackground
@@ -72,60 +83,53 @@ export const TransactionsScreen = () => {
     >
       <SafeAreaView style={styles.container}>
         <View style={styles.header}>
-        <View style={styles.placeholder} />
-        <Text style={styles.title}>Transactions</Text>
-        <View style={styles.placeholder} />
-      </View>
-
-      {/* Filters */}
-      <View style={styles.filters}>
-        <TouchableOpacity
-          style={[styles.filterButton, filter === 'all' && styles.filterButtonActive]}
-          onPress={() => setFilter('all')}
-        >
-          <Text style={[styles.filterText, filter === 'all' && styles.filterTextActive]}>
-            All
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.filterButton, filter === 'success' && styles.filterButtonActive]}
-          onPress={() => setFilter('success')}
-        >
-          <Text style={[styles.filterText, filter === 'success' && styles.filterTextActive]}>
-            Success
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.filterButton, filter === 'failed' && styles.filterButtonActive]}
-          onPress={() => setFilter('failed')}
-        >
-          <Text style={[styles.filterText, filter === 'failed' && styles.filterTextActive]}>
-            Failed
-          </Text>
-        </TouchableOpacity>
-      </View>
-
-      {loading ? (
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={COLORS.accent} />
+          <View style={styles.placeholder} />
+          <Text style={styles.title}>Transactions</Text>
+          <View style={styles.placeholder} />
         </View>
-      ) : (
-        <FlatList
-          data={filteredTransactions}
-          renderItem={renderTransaction}
-          keyExtractor={(item) => item.id}
-          contentContainerStyle={styles.listContent}
-          showsVerticalScrollIndicator={false}
-          ListEmptyComponent={
-            <View style={styles.emptyContainer}>
-              <Icon name="document-outline" library="ionicons" size={64} color={COLORS.textMuted} />
-              <Text style={styles.emptyText}>No transactions yet</Text>
-              <Text style={styles.emptySubtext}>Your transaction history will appear here</Text>
-            </View>
-          }
-        />
-      )}
-    </SafeAreaView>
+
+        <View style={styles.filtersWrap}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.filtersScroll}
+            style={styles.filtersScrollOuter}
+            bounces={false}
+          >
+            {filterChips.map(({ key, label }) => (
+              <TouchableOpacity
+                key={key}
+                style={[styles.filterButton, filter === key && styles.filterButtonActive]}
+                onPress={() => setFilter(key)}
+                activeOpacity={0.85}
+              >
+                <Text style={[styles.filterText, filter === key && styles.filterTextActive]}>{label}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+
+        {loading ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color={COLORS.accent} />
+          </View>
+        ) : (
+          <FlatList
+            data={filteredTransactions}
+            renderItem={renderTransaction}
+            keyExtractor={(item) => item.id}
+            contentContainerStyle={styles.listContent}
+            showsVerticalScrollIndicator={false}
+            ListEmptyComponent={
+              <View style={styles.emptyContainer}>
+                <Icon name="document-outline" library="ionicons" size={64} color={COLORS.textMuted} />
+                <Text style={styles.emptyText}>No transactions yet</Text>
+                <Text style={styles.emptySubtext}>Your transaction history will appear here</Text>
+              </View>
+            }
+          />
+        )}
+      </SafeAreaView>
     </ImageBackground>
   );
 };
@@ -142,7 +146,8 @@ const styles = StyleSheet.create({
   },
   container: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    /** Darker scrim so list sits on calmer surface (background image is less distracting). */
+    backgroundColor: 'rgba(0, 0, 0, 0.58)',
   },
   loadingContainer: {
     flex: 1,
@@ -164,19 +169,35 @@ const styles = StyleSheet.create({
     fontWeight: FONT_WEIGHTS.bold,
     color: COLORS.text,
   },
-  filters: {
-    flexDirection: 'row',
+  filtersWrap: {
+    marginBottom: SPACING.lg,
+    paddingBottom: SPACING.xs,
+  },
+  /** Min height so labels are never vertically clipped inside the scroll row. */
+  filtersScrollOuter: {
+    flexGrow: 0,
+    minHeight: 48,
+  },
+  filtersScroll: {
     paddingHorizontal: SPACING.lg,
+    paddingVertical: SPACING.sm,
     gap: SPACING.sm,
-    marginBottom: SPACING.md,
+    alignItems: 'center',
+    minHeight: 48,
   },
   filterButton: {
     paddingHorizontal: SPACING.md,
-    paddingVertical: SPACING.sm,
-    borderRadius: 20,
+    paddingVertical: 12,
+    minHeight: 44,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: 22,
     backgroundColor: 'rgba(77, 98, 80, 0.30)',
     borderWidth: 1,
     borderColor: COLORS.borderLight,
+    ...Platform.select({
+      android: { overflow: 'visible' as const },
+    }),
   },
   filterButtonActive: {
     backgroundColor: COLORS.accent,
@@ -184,15 +205,20 @@ const styles = StyleSheet.create({
   },
   filterText: {
     fontSize: FONT_SIZES.sm,
+    lineHeight: 20,
     color: COLORS.textSecondary,
     fontWeight: FONT_WEIGHTS.medium,
+    ...Platform.select({
+      android: { includeFontPadding: false },
+    }),
   },
   filterTextActive: {
     color: COLORS.secondary,
   },
   listContent: {
-    padding: SPACING.lg,
-    paddingTop: 0,
+    paddingHorizontal: SPACING.lg,
+    paddingTop: SPACING.xs,
+    paddingBottom: SPACING.xxl,
   },
   emptyContainer: {
     alignItems: 'center',

@@ -1,6 +1,18 @@
 import React, { useState, useContext } from 'react';
-import { View, Text, StyleSheet, ScrollView, SafeAreaView, TouchableOpacity, KeyboardAvoidingView, Platform, ImageBackground } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  SafeAreaView,
+  TouchableOpacity,
+  KeyboardAvoidingView,
+  Platform,
+  ImageBackground,
+  Image,
+} from 'react-native';
 import { useRouter } from 'expo-router';
+import * as ImagePicker from 'expo-image-picker';
 import { AuthContext } from '../../context/AuthContext';
 import { COLORS, FONT_SIZES, FONT_WEIGHTS, SPACING } from '../../constants/theme';
 import { Input } from '../../components/ui/Input';
@@ -19,9 +31,14 @@ export const ProfileSettingsScreen = () => {
   const [username, setUsername] = useState(user?.username || '');
   const [email, setEmail] = useState(user?.email || '');
   const [phone, setPhone] = useState(user?.phone || '');
+  /** null = keep server value; string = new data URL or URL; '' = remove */
+  const [profileImageDraft, setProfileImageDraft] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [showToast, setShowToast] = useState(false);
+
+  const displayAvatarUri =
+    profileImageDraft !== null ? profileImageDraft || undefined : user?.profileImage || undefined;
 
   const handleSave = async () => {
     if (!firstName || !lastName) {
@@ -44,13 +61,17 @@ export const ProfileSettingsScreen = () => {
     setError('');
 
     try {
-      const response = await apiService.updateProfile({
+      const payload: Parameters<typeof apiService.updateProfile>[0] = {
         firstName,
         lastName,
         username: username.trim() || undefined,
         email: email.trim(),
         phone: phone.trim() || undefined,
-      });
+      };
+      if (profileImageDraft !== null) {
+        payload.profileImage = profileImageDraft;
+      }
+      const response = await apiService.updateProfile(payload);
 
       if (response.success && response.user) {
         updateUser(response.user);
@@ -66,6 +87,31 @@ export const ProfileSettingsScreen = () => {
     } finally {
       setLoading(false);
     }
+  };
+
+  const pickProfileImage = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      setError('Photo library permission is required to change your profile image');
+      setShowToast(true);
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.5,
+      base64: true,
+    });
+    if (result.canceled || !result.assets[0]?.base64) return;
+    const asset = result.assets[0];
+    const mime = asset.mimeType || 'image/jpeg';
+    const prefix = mime.startsWith('image/') ? mime : 'image/jpeg';
+    setProfileImageDraft(`data:${prefix};base64,${asset.base64}`);
+  };
+
+  const clearProfileImage = () => {
+    setProfileImageDraft('');
   };
 
   return (
@@ -94,6 +140,36 @@ export const ProfileSettingsScreen = () => {
           keyboardShouldPersistTaps="handled"
         >
           <Card style={styles.card}>
+            <Text style={styles.avatarSectionLabel}>Profile photo</Text>
+            <View style={styles.avatarRow}>
+              <TouchableOpacity
+                onPress={pickProfileImage}
+                activeOpacity={0.85}
+                style={styles.avatarTouchable}
+              >
+                {displayAvatarUri ? (
+                  <Image source={{ uri: displayAvatarUri }} style={styles.avatarImage} />
+                ) : (
+                  <View style={styles.avatarPlaceholder}>
+                    <Icon name="person" library="ionicons" size={40} color={COLORS.textMuted} />
+                  </View>
+                )}
+                <View style={styles.avatarEditBadge}>
+                  <Icon name="camera" library="ionicons" size={16} color={COLORS.secondary} />
+                </View>
+              </TouchableOpacity>
+              <View style={styles.avatarActions}>
+                <TouchableOpacity onPress={pickProfileImage} style={styles.avatarLink}>
+                  <Text style={styles.avatarLinkText}>Choose photo</Text>
+                </TouchableOpacity>
+                {!!displayAvatarUri && (
+                  <TouchableOpacity onPress={clearProfileImage} style={styles.avatarLink}>
+                    <Text style={[styles.avatarLinkText, styles.avatarRemoveText]}>Remove photo</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            </View>
+
             <Input
               label="First Name"
               placeholder="John"
@@ -130,7 +206,7 @@ export const ProfileSettingsScreen = () => {
             />
 
             <Input
-              label="Phone (Optional)"
+              label="Phone"
               placeholder="+234 801 234 5678"
               value={phone}
               onChangeText={setPhone}
@@ -201,6 +277,68 @@ const styles = StyleSheet.create({
   },
   card: {
     marginBottom: SPACING.lg,
+  },
+  avatarSectionLabel: {
+    fontSize: FONT_SIZES.sm,
+    fontWeight: FONT_WEIGHTS.semibold,
+    color: COLORS.textSecondary,
+    marginBottom: SPACING.sm,
+  },
+  avatarRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: SPACING.lg,
+    gap: SPACING.md,
+  },
+  avatarTouchable: {
+    position: 'relative',
+  },
+  avatarImage: {
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    borderWidth: 2,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    backgroundColor: COLORS.surface,
+  },
+  avatarPlaceholder: {
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    borderWidth: 2,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    backgroundColor: COLORS.surface,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  avatarEditBadge: {
+    position: 'absolute',
+    bottom: 2,
+    right: 2,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: COLORS.accent,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: COLORS.secondary,
+  },
+  avatarActions: {
+    flex: 1,
+    gap: SPACING.xs,
+  },
+  avatarLink: {
+    paddingVertical: SPACING.xs,
+  },
+  avatarLinkText: {
+    fontSize: FONT_SIZES.md,
+    fontWeight: FONT_WEIGHTS.semibold,
+    color: COLORS.accent,
+  },
+  avatarRemoveText: {
+    color: COLORS.textMuted,
+    fontWeight: FONT_WEIGHTS.normal,
   },
   saveButton: {
     marginTop: SPACING.md,

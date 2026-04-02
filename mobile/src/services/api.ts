@@ -78,6 +78,7 @@ export const realApi = {
     email?: string;
     phone?: string;
     username?: string;
+    profileImage?: string;
   }) => {
     const response = await api.put('/auth/profile', profileData);
     if (response.data.success && response.data.user) {
@@ -148,6 +149,11 @@ export const realApi = {
   // Transactions
   getTransactions: async () => {
     const response = await api.get('/transactions');
+    return response.data;
+  },
+
+  getTransactionById: async (id: string) => {
+    const response = await api.get(`/transactions/${encodeURIComponent(id)}`);
     return response.data;
   },
 
@@ -243,6 +249,7 @@ export const mockApi = {
     email?: string;
     phone?: string;
     username?: string;
+    profileImage?: string;
   }) => {
     await new Promise(resolve => setTimeout(resolve, 800));
     const currentUserData = await AsyncStorage.getItem('userData');
@@ -359,6 +366,33 @@ export const mockApi = {
     return {
       success: true,
       transactions: mockTransactions,
+    };
+  },
+
+  getTransactionById: async (id: string) => {
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    const tx = mockTransactions.find((t) => String(t.id) === String(id));
+    if (!tx) {
+      return { success: false, message: 'Transaction not found.' };
+    }
+    const statusMap: Record<string, string> = {
+      success: 'completed',
+      failed: 'failed',
+      pending: 'pending',
+    };
+    return {
+      success: true,
+      transaction: {
+        _id: tx.id,
+        merchantName: tx.merchant,
+        amount: tx.amount,
+        currency: tx.currency,
+        status: statusMap[tx.status] ?? 'completed',
+        type: tx.type ?? 'payment',
+        createdAt: tx.date,
+        paymentMethod: 'wallet',
+        description: `${tx.type === 'deposit' ? 'Wallet deposit' : 'Payment'} — ${tx.merchant}`,
+      },
     };
   },
 

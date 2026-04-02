@@ -15,6 +15,7 @@ export interface MockUser {
   firstName: string;
   lastName: string;
   email: string;
+  username?: string;
   phone?: string;
 }
 
@@ -31,6 +32,7 @@ export const mockUser: MockUser = {
   firstName: "Tunde",
   lastName: "Adebayo",
   email: "tunde@example.com",
+  username: "tunde",
   phone: "+2348012345678",
 };
 

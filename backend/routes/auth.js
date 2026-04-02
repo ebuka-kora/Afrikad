@@ -42,6 +42,12 @@ router.post('/register', [
   body('password').isLength({ min: 6 }),
   body('firstName').notEmpty().trim(),
   body('lastName').notEmpty().trim(),
+  body('username')
+    .notEmpty()
+    .trim()
+    .isLength({ min: 3, max: 30 })
+    .matches(/^[a-zA-Z0-9_]+$/)
+    .withMessage('Username must be 3–30 characters (letters, numbers, underscore only).'),
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -50,6 +56,9 @@ router.post('/register', [
     }
 
     const { email, password, firstName, lastName, phone, username } = req.body;
+    const normalizedUsername = String(username || '')
+      .trim()
+      .toLowerCase();
 
     // Check if user exists
     const existingUser = await User.findOne({ email });
@@ -60,15 +69,12 @@ router.post('/register', [
       });
     }
 
-    // Check if username is taken (if provided)
-    if (username) {
-      const existingUsername = await User.findOne({ username });
-      if (existingUsername) {
-        return res.status(400).json({
-          success: false,
-          message: 'Username already taken.',
-        });
-      }
+    const existingUsername = await User.findOne({ username: normalizedUsername });
+    if (existingUsername) {
+      return res.status(400).json({
+        success: false,
+        message: 'Username already taken.',
+      });
     }
 
     const emailVerificationToken = crypto.randomBytes(32).toString('hex');
@@ -80,7 +86,7 @@ router.post('/register', [
       firstName,
       lastName,
       phone,
-      username,
+      username: normalizedUsername,
       emailVerificationToken: emailVerificationTokenHash,
       emailVerificationExpires: new Date(Date.now() + EMAIL_VERIFICATION_EXPIRY_MS),
     });
@@ -112,6 +118,7 @@ router.post('/register', [
         lastName: user.lastName,
         phone: user.phone,
         username: user.username,
+        profileImage: user.profileImage || '',
         wallet: user.wallet,
         emailVerified: user.emailVerified,
       },
@@ -171,6 +178,7 @@ router.post('/login', [
         lastName: user.lastName,
         phone: user.phone,
         username: user.username,
+        profileImage: user.profileImage || '',
         wallet: user.wallet,
         role: user.role,
         emailVerified: user.emailVerified,
@@ -307,6 +315,7 @@ router.get('/me', authenticate, async (req, res) => {
         lastName: user.lastName,
         phone: user.phone,
         username: user.username,
+        profileImage: user.profileImage || '',
         wallet: user.wallet,
         role: user.role,
         emailVerified: user.emailVerified,
@@ -325,6 +334,11 @@ router.put('/profile', authenticate, [
   body('email').optional().isEmail().normalizeEmail(),
   body('firstName').optional().notEmpty().trim(),
   body('lastName').optional().notEmpty().trim(),
+  body('profileImage')
+    .optional()
+    .isString()
+    .isLength({ max: 500000 })
+    .withMessage('Profile image is too large.'),
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -332,7 +346,7 @@ router.put('/profile', authenticate, [
       return res.status(400).json({ success: false, errors: errors.array() });
     }
 
-    const { firstName, lastName, email, phone, username } = req.body;
+    const { firstName, lastName, email, phone, username, profileImage } = req.body;
     const user = await User.findById(req.user._id);
 
     if (!user) {
@@ -371,6 +385,9 @@ router.put('/profile', authenticate, [
     if (firstName) user.firstName = firstName;
     if (lastName) user.lastName = lastName;
     if (phone !== undefined) user.phone = phone || undefined;
+    if (profileImage !== undefined) {
+      user.profileImage = typeof profileImage === 'string' ? profileImage.trim() : '';
+    }
 
     user.updatedAt = Date.now();
     await user.save();
@@ -385,6 +402,7 @@ router.put('/profile', authenticate, [
         lastName: user.lastName,
         phone: user.phone,
         username: user.username,
+        profileImage: user.profileImage || '',
         wallet: user.wallet,
         role: user.role,
       },

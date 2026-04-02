@@ -1,17 +1,77 @@
-import React, { useContext } from 'react';
-import { View, Text, StyleSheet, ScrollView, SafeAreaView, TouchableOpacity, ImageBackground } from 'react-native';
+import React, { useContext, useState, useCallback } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  SafeAreaView,
+  TouchableOpacity,
+  ImageBackground,
+  Image,
+  ActivityIndicator,
+} from 'react-native';
 import { useRouter } from 'expo-router';
+import * as ImagePicker from 'expo-image-picker';
 import { AuthContext } from '../../context/AuthContext';
 import { COLORS, FONT_SIZES, FONT_WEIGHTS, SPACING, BORDER_RADIUS } from '../../constants/theme';
 import { Card } from '../../components/ui/Card';
 import { Icon } from '../../components/ui/Icon';
+import { Toast } from '../../components/ui/Toast';
 import { LinearGradient } from 'expo-linear-gradient';
+import { apiService } from '../../services/api';
 
 export const ProfileScreen = () => {
   const router = useRouter();
-  const { user } = useContext(AuthContext)!;
+  const { user, updateUser } = useContext(AuthContext)!;
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [toastMessage, setToastMessage] = useState('');
+  const [toastType, setToastType] = useState<'error' | 'success' | 'info'>('error');
+  const [showToast, setShowToast] = useState(false);
 
   const displayName = user?.username || user?.email?.split('@')[0] || 'User';
+
+  const pickProfilePhoto = useCallback(async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      setToastType('error');
+      setToastMessage('Photo library permission is required to change your profile photo.');
+      setShowToast(true);
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.5,
+      base64: true,
+    });
+    if (result.canceled || !result.assets[0]?.base64) return;
+    const asset = result.assets[0];
+    const mime = asset.mimeType || 'image/jpeg';
+    const prefix = mime.startsWith('image/') ? mime : 'image/jpeg';
+    const profileImage = `data:${prefix};base64,${asset.base64}`;
+
+    setUploadingAvatar(true);
+    try {
+      const response = await apiService.updateProfile({ profileImage });
+      if (response.success && response.user) {
+        updateUser(response.user);
+        setToastType('success');
+        setToastMessage('Profile photo updated');
+        setShowToast(true);
+      } else {
+        setToastType('error');
+        setToastMessage(response.message || 'Could not update photo');
+        setShowToast(true);
+      }
+    } catch (e: any) {
+      setToastType('error');
+      setToastMessage(e?.response?.data?.message || e?.message || 'Could not update photo');
+      setShowToast(true);
+    } finally {
+      setUploadingAvatar(false);
+    }
+  }, [updateUser]);
 
   return (
     <ImageBackground
@@ -28,14 +88,34 @@ export const ProfileScreen = () => {
         >
         {/* Centered Profile Header */}
         <View style={styles.profileHeaderSection}>
-          <LinearGradient
-            colors={['rgba(77, 98, 80, 0.30)', 'rgba(77, 98, 80, 0.30)', 'rgba(77, 98, 80, 0.30)']}
-            style={styles.avatar}
+          <TouchableOpacity
+            style={styles.avatarTouchable}
+            onPress={pickProfilePhoto}
+            activeOpacity={0.85}
+            disabled={uploadingAvatar}
+            accessibilityRole="button"
+            accessibilityLabel="Change profile photo"
           >
-            <Text style={styles.avatarText}>
-              {user?.username?.[0]?.toUpperCase() || user?.email?.[0]?.toUpperCase() || 'U'}
-            </Text>
-          </LinearGradient>
+            {user?.profileImage ? (
+              <Image source={{ uri: user.profileImage }} style={styles.avatarImage} />
+            ) : (
+              <LinearGradient
+                colors={['rgba(77, 98, 80, 0.30)', 'rgba(77, 98, 80, 0.30)', 'rgba(77, 98, 80, 0.30)']}
+                style={styles.avatar}
+              >
+                <Text style={styles.avatarText}>
+                  {user?.username?.[0]?.toUpperCase() || user?.email?.[0]?.toUpperCase() || 'U'}
+                </Text>
+              </LinearGradient>
+            )}
+            <View style={styles.avatarEditBadge}>
+              {uploadingAvatar ? (
+                <ActivityIndicator size="small" color={COLORS.accent} />
+              ) : (
+                <Icon name="camera-outline" library="ionicons" size={18} color={COLORS.text} />
+              )}
+            </View>
+          </TouchableOpacity>
           <Text style={styles.profileName}>{displayName}</Text>
           <Text style={styles.profileEmail}>{user?.email || 'Not set'}</Text>
           <TouchableOpacity
@@ -120,6 +200,14 @@ export const ProfileScreen = () => {
         </View>
         </ScrollView>
       </SafeAreaView>
+      {showToast && (
+        <Toast
+          message={toastMessage}
+          type={toastType}
+          visible={showToast}
+          onHide={() => setShowToast(false)}
+        />
+      )}
     </ImageBackground>
   );
 };
@@ -150,20 +238,44 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.xl,
     paddingTop: SPACING.md,
   },
+  avatarTouchable: {
+    position: 'relative',
+    marginBottom: SPACING.md,
+  },
   avatar: {
-    width: 88,
-    height: 88,
-    borderRadius: 44,
+    width: 110,
+    height: 160,
+    borderRadius: 100,
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 2,
-    borderColor: 'rgba(255, 255, 255, 0.12)',
+    borderColor: 'rgba(241, 11, 11, 0.23)',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 8,
     elevation: 5,
-    marginBottom: SPACING.md,
+  },
+  avatarImage: {
+    width: 110,
+    height: 160,
+    borderRadius: 100,
+    borderWidth: 2,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    backgroundColor: COLORS.surface,
+  },
+  avatarEditBadge: {
+    position: 'absolute',
+    right: 4,
+    bottom: 8,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(0, 0, 0, 0.55)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   avatarText: {
     fontSize: FONT_SIZES['3xl'],
